@@ -154,15 +154,25 @@ func (c *PublishCmd) Run(ctx *Context) error {
 	return nil
 }
 
-// SubscribeCmd subscribes to a topic and streams messages.
+// SubscribeCmd subscribes to topics and streams messages.
 type SubscribeCmd struct {
-	Topic string `arg:"" help:"Topic to subscribe to"`
-	Raw   bool   `short:"r" help:"Output raw messages without formatting"`
+	Topics []string `arg:"" help:"Topics to subscribe to (comma-separated)"`
+	Raw    bool     `short:"r" help:"Output raw messages without formatting"`
 }
 
 func (c *SubscribeCmd) Run(ctx *Context) error {
 	// Build WebSocket URL
-	wsURL := fmt.Sprintf("ws://%s:%s%s%s", ctx.Host, ctx.Port, api.RouteSubscribe, c.Topic)
+	// ws://host:port/ws/?topics=t1,t2
+	u := fmt.Sprintf("ws://%s:%s%s", ctx.Host, ctx.Port, api.RouteSubscribe)
+
+	// Append topics as query params
+	if len(c.Topics) > 0 {
+		// Only use query param if topics are provided via args
+		// (API also supports /ws/{topic} but we prefer query params now)
+		u += "?" + api.QueryParamTopics + "=" + strings.Join(c.Topics, ",")
+	} else {
+		return fmt.Errorf("at least one topic is required")
+	}
 
 	// TODO: Add TLS support for production (wss://)
 	// TODO: Add authentication via query param or initial message
@@ -181,14 +191,14 @@ func (c *SubscribeCmd) Run(ctx *Context) error {
 	}()
 
 	// Connect to WebSocket
-	conn, _, err := websocket.Dial(bgCtx, wsURL, nil)
+	conn, _, err := websocket.Dial(bgCtx, u, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	if !c.Raw {
-		fmt.Printf("Subscribed to topic '%s' (Ctrl+C to exit)\n", c.Topic)
+		fmt.Printf("Subscribed to topics '%v' (Ctrl+C to exit)\n", c.Topics)
 		fmt.Println(strings.Repeat("-", 40))
 	}
 

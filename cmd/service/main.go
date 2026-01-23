@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,8 +33,17 @@ func main() {
 	port := getEnv("PORT", api.DefaultPort)
 	rabbitURL := getEnv("RABBITMQ_URL", api.DefaultRabbitURL)
 
+	// Configure queue settings
+	msgTTL, _ := strconv.Atoi(getEnv("HOOKLET_MESSAGE_TTL", strconv.Itoa(api.DefaultMessageTTL)))
+	queueExpiry, _ := strconv.Atoi(getEnv("HOOKLET_QUEUE_EXPIRY", strconv.Itoa(api.DefaultQueueExpiry)))
+
+	mqConfig := queue.Config{
+		MessageTTL:  msgTTL,
+		QueueExpiry: queueExpiry,
+	}
+
 	// Connect to RabbitMQ
-	mqClient, err := queue.NewClient(rabbitURL)
+	mqClient, err := queue.NewClient(rabbitURL, mqConfig)
 	if err != nil {
 		log.Fatal("Failed to connect to RabbitMQ", "error", err)
 	}
@@ -158,17 +168,33 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleWS upgrades to WebSocket and streams messages from RabbitMQ.
-// GET /ws/{topic} (WebSocket upgrade)
+// GET /ws/{topic}?topics=t1,t2
 func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
-	// Extract topic from path: /ws/{topic}
-	topic := strings.TrimPrefix(r.URL.Path, api.RouteSubscribe)
-	if topic == "" {
-		http.Error(w, "Topic required", http.StatusBadRequest)
+	// Parse topics from URL query params
+	var topics []string
+	if t := r.URL.Query().Get(api.QueryParamTopics); t != "" {
+		topics = strings.Split(t, ",")
+	}
+
+	// Also support topic from path for backward compatibility / convenience
+	// /ws/{topic}
+	pathTopic := strings.TrimPrefix(r.URL.Path, api.RouteSubscribe)
+	if pathTopic != "" && pathTopic != "/" {
+		topics = append(topics, pathTopic)
+	}
+
+	if len(topics) == 0 {
+		http.Error(w, "No topics specified", http.StatusBadRequest)
 		return
 	}
 
 	// TODO: Add authentication check here for WebSocket connections
-	// Could use query param or initial message for token
+	// For now, we use the Sec-WebSocket-Key as a session ID to identify the consumer
+	consumerID := r.Header.Get("Sec-WebSocket-Key")
+	if consumerID == "" {
+		// Fallback for non-standard clients
+		consumerID = r.RemoteAddr
+	}
 
 	// Accept WebSocket connection
 	// TODO: Configure allowed origins for production security
@@ -181,17 +207,19 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	log.Info("WebSocket client connected", "topic", topic, "remote", r.RemoteAddr)
+	log.Info("WebSocket client connected", "consumer_id", consumerID, "topics", topics, "remote", r.RemoteAddr)
 
-	// Track topic
+	// Track topics
 	s.mu.Lock()
-	s.topics[topic] = struct{}{}
+	for _, t := range topics {
+		s.topics[t] = struct{}{}
+	}
 	s.mu.Unlock()
 
-	// Subscribe to queue
-	msgs, err := s.mq.Consume(topic)
+	// Subscribe to queue with specific topics
+	msgs, err := s.mq.Subscribe(consumerID, topics)
 	if err != nil {
-		log.Error("Failed to consume", "topic", topic, "error", err)
+		log.Error("Failed to subscribe", "consumer_id", consumerID, "error", err)
 		conn.Close(websocket.StatusInternalError, "Failed to subscribe")
 		return
 	}
@@ -201,18 +229,22 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info("WebSocket client disconnected", "topic", topic)
+			log.Info("WebSocket client disconnected", "consumer_id", consumerID)
 			return
 		case msg, ok := <-msgs:
 			if !ok {
-				log.Info("Queue channel closed", "topic", topic)
+				log.Info("Queue channel closed", "consumer_id", consumerID)
 				return
 			}
 			if err := conn.Write(ctx, websocket.MessageText, msg.Body); err != nil {
 				log.Error("Failed to write to websocket", "error", err)
 				return
 			}
-			log.Debug("Message sent to client", "topic", topic, "size", len(msg.Body))
+			// Acknowledge message only after successful write to WebSocket
+			if err := msg.Ack(false); err != nil {
+				log.Error("Failed to ack message", "error", err)
+			}
+			log.Debug("Message sent to client", "size", len(msg.Body))
 		}
 	}
 }

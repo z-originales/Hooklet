@@ -7,7 +7,7 @@ import "time"
 const (
 	// Service endpoints
 	RouteStatus    = "/api/status"
-	RoutePublish   = "/api/webhook/" // + {topic}
+	RoutePublish   = "/webhook/" // + {topic}
 	RouteTopics    = "/api/topics"
 	RouteSubscribe = "/ws/" // + {topic}
 )
@@ -17,6 +17,16 @@ const (
 	DefaultPort      = "8080"
 	DefaultHost      = "localhost"
 	DefaultRabbitURL = "amqp://guest:guest@localhost:5672/"
+
+	// DefaultMessageTTL is how long messages stay in a queue before expiring (milliseconds).
+	// If a consumer doesn't read a message within this time, it's discarded.
+	// Override with HOOKLET_MESSAGE_TTL environment variable.
+	DefaultMessageTTL = 300000 // 5 minutes
+
+	// DefaultQueueExpiry is how long an unused queue persists before auto-deletion (milliseconds).
+	// If no consumer connects to a queue within this time, RabbitMQ deletes it.
+	// Override with HOOKLET_QUEUE_EXPIRY environment variable.
+	DefaultQueueExpiry = 3600000 // 1 hour
 )
 
 // StatusResponse is returned by the status endpoint.
@@ -43,5 +53,9 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-// TODO: Add authentication header constant when implementing security
-// const HeaderAuthToken = "X-Hooklet-Token"
+// Authentication header for webhook ingestion and WebSocket connections.
+const HeaderAuthToken = "X-Hooklet-Token"
+
+// QueryParamTopics is the URL query parameter for specifying webhook subscriptions.
+// Example: /ws?topics=webhook1,webhook2,webhook3
+const QueryParamTopics = "topics"
