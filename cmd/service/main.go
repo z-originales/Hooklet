@@ -422,9 +422,22 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate webhook exists in DB if configured to do so
-	// For now we allow open publishing or token based.
-	// TODO: Add token validation against Users table if header present.
+	// Validate webhook exists in DB
+	// Strict Mode: The URL contains the topic_hash directly (e.g., /webhook/a1b2c3...).
+	// This prevents topic enumeration - only those who know the hash can publish.
+	// We look up the hash directly in the DB without re-hashing.
+	topicHash := topic // The URL segment IS the hash
+	wh, err := s.db.GetWebhookByHash(topicHash)
+	if err != nil {
+		log.Error("Failed to check webhook existence", "topic_hash", topicHash, "error", err)
+		writeError(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if wh == nil {
+		log.Warn("Attempt to publish to non-existent webhook", "topic_hash", topicHash)
+		writeError(w, "Webhook not found", http.StatusNotFound)
+		return
+	}
 
 	// Read body
 	body, err := io.ReadAll(r.Body)
@@ -439,18 +452,20 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	if err := s.mq.Publish(ctx, topic, body); err != nil {
-		log.Error("Failed to publish", "topic", topic, "error", err)
+	// Publish to queue using the webhook's original name as routing key
+	// (RabbitMQ routing uses the human-readable name internally)
+	if err := s.mq.Publish(ctx, wh.Name, body); err != nil {
+		log.Error("Failed to publish", "topic", wh.Name, "error", err)
 		writeError(w, "Failed to publish", http.StatusInternalServerError)
 		return
 	}
 
-	// Track topic
+	// Track topic (by name, not hash)
 	s.mu.Lock()
-	s.topics[topic] = struct{}{}
+	s.topics[wh.Name] = struct{}{}
 	s.mu.Unlock()
 
-	log.Info("Webhook received", "topic", topic, "size", len(body))
+	log.Info("Webhook received", "topic", wh.Name, "hash", topicHash, "size", len(body))
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -475,13 +490,81 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Add authentication check here for WebSocket connections
-	// For now, we use the Sec-WebSocket-Key as a session ID to identify the consumer
-	consumerID := r.Header.Get("Sec-WebSocket-Key")
-	if consumerID == "" {
-		// Fallback for non-standard clients
-		consumerID = r.RemoteAddr
+	// Authentication Check
+	// We check for auth only if the request comes from TCP (external)
+	// If it comes from the admin socket, we trust it (admin bypass for CLI subscribe)
+	var user *store.User
+
+	// Check if this is a trusted admin connection (CLI)
+	if bypass, ok := r.Context().Value(ctxKeyAdminBypass).(bool); ok && bypass {
+		// Create a synthetic admin user for tracking
+		user = &store.User{
+			ID:            0,
+			Name:          "admin-cli",
+			Subscriptions: "*",
+		}
+	} else {
+		// Standard Auth for external clients
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			token = r.Header.Get(api.HeaderAuthToken)
+		}
+
+		if token == "" {
+			log.Warn("WebSocket connection attempt without token", "remote", r.RemoteAddr)
+			writeError(w, "Authentication required", http.StatusUnauthorized)
+			return
+		}
+
+		// Validate Token against DB
+		// Note: GetUserByToken handles hashing internally
+		var err error
+		user, err = s.db.GetUserByToken(token)
+		if err != nil {
+			log.Error("Failed to validate token", "error", err)
+			writeError(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		if user == nil {
+			log.Warn("WebSocket connection attempt with invalid token", "remote", r.RemoteAddr)
+			writeError(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
 	}
+
+	// Authorization Check (Subscriptions)
+	// User must have permission to subscribe to the requested topics
+	// user.Subscriptions can be "*" or "topic1,topic2"
+	allowed := false
+	if user.Subscriptions == "*" {
+		allowed = true
+	} else {
+		// Check each requested topic against user subscriptions
+		subs := strings.Split(user.Subscriptions, ",")
+		subMap := make(map[string]bool)
+		for _, sub := range subs {
+			subMap[strings.TrimSpace(sub)] = true
+		}
+
+		// All requested topics must be allowed
+		allAllowed := true
+		for _, t := range topics {
+			if !subMap[t] {
+				allAllowed = false
+				break
+			}
+		}
+		allowed = allAllowed
+	}
+
+	if !allowed {
+		log.Warn("User tried to subscribe to unauthorized topics", "user", user.Name, "topics", topics)
+		writeError(w, "Unauthorized access to one or more topics", http.StatusForbidden)
+		return
+	}
+
+	// Consumer ID is now the User ID / Name to ensure tracking
+	consumerID := fmt.Sprintf("%s-%d", user.Name, user.ID)
 
 	// Accept WebSocket connection
 	// TODO: Configure allowed origins for production security

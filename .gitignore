@@ -1,11 +1,7 @@
 # Binaries
 hooklet
-hooklet.exe
-hooklet-service
-hooklet-service.exe
 hooklet-cli
-hooklet-cli.exe
-
+*.exe
 # Local configs/data
 hooklet.db
 hooklet.sock

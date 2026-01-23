@@ -150,7 +150,12 @@ func (c *WebhookCreateCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	fmt.Printf("Webhook created: %s (ID: %d)\n", wh.Name, wh.ID)
+	fmt.Printf("Webhook created!\n")
+	fmt.Printf("  Name:      %s\n", wh.Name)
+	fmt.Printf("  ID:        %d\n", wh.ID)
+	fmt.Printf("  Topic URL: /webhook/%s\n", wh.TopicHash)
+	fmt.Println("")
+	fmt.Println("Use the Topic URL to publish webhooks. The hash prevents topic enumeration.")
 	return nil
 }
 
@@ -173,9 +178,16 @@ func (c *WebhookListCmd) Run(ctx *Context) error {
 		return err
 	}
 
+	if len(webhooks) == 0 {
+		fmt.Println("No webhooks registered.")
+		return nil
+	}
+
 	fmt.Println("Webhooks:")
 	for _, w := range webhooks {
-		fmt.Printf("  %d: %s (%s)\n", w.ID, w.Name, w.CreatedAt.Format(time.RFC3339))
+		fmt.Printf("  [%d] %s\n", w.ID, w.Name)
+		fmt.Printf("      URL: /webhook/%s\n", w.TopicHash)
+		fmt.Printf("      Created: %s\n", w.CreatedAt.Format(time.RFC3339))
 	}
 	return nil
 }
@@ -406,7 +418,6 @@ func (c *SubscribeCmd) Run(ctx *Context) error {
 	}
 
 	// TODO: Add TLS support for production (wss://)
-	// TODO: Add authentication via query param or initial message
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
