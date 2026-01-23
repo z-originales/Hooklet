@@ -18,12 +18,10 @@ Receiving webhooks locally or on internal services requires either:
 
 ## Features
 
-- **Secure by Default**: Topics must be registered before use, users need tokens
-- **Topic Hashing**: Webhook URLs use SHA256 hashes to prevent enumeration
 - **Real-Time Streaming**: Instant delivery via WebSocket
 - **Multi-Topic Subscriptions**: Listen to multiple webhooks on one connection
 - **Reliable Delivery**: Built on RabbitMQ with message persistence
-- **Simple Administration**: CLI tool for managing webhooks and users
+- **Simple Administration**: CLI tool for managing webhooks and consumers
 
 ## Quick Start
 
@@ -65,15 +63,15 @@ Webhook created!
 Use the Topic URL to publish webhooks. The hash prevents topic enumeration.
 ```
 
-### 4. Create a User (Admin)
+### 4. Create a Consumer (Admin)
 
 ```bash
-./hooklet-cli user create my-backend --subscriptions=stripe-payments
+./hooklet-cli consumer create my-backend --subscriptions=stripe-payments
 ```
 
 Output:
 ```
-User created: my-backend (ID: 1)
+Consumer created: my-backend (ID: 1)
 Token: my-backend-1737012345678
 SAVE THIS TOKEN! It will not be shown again.
 ```
@@ -92,7 +90,7 @@ Your app connects via WebSocket and authenticates:
 ```
 1. Connect:  ws://your-server.com/ws?topics=stripe-payments
 2. Send:     {"type":"auth","token":"my-backend-1737012345678"}
-3. Receive:  {"type":"auth_ok","user":"my-backend"}
+3. Receive:  {"type":"auth_ok","consumer":"my-backend"}
 4. Stream:   ... webhook payloads arrive here ...
 ```
 
@@ -232,7 +230,7 @@ ws.on('message', (data) => {
     const msg = JSON.parse(data);
     
     if (msg.type === 'auth_ok') {
-        console.log(`Authenticated as: ${msg.user}`);
+        console.log(`Authenticated as: ${msg.consumer}`);
         console.log('Listening for webhooks...');
     } else {
         console.log('Webhook received:', msg);
@@ -247,7 +245,7 @@ ws.on('error', (err) => console.error('Error:', err));
 
 ## CLI Commands
 
-The CLI is for **administration only** (not for publishing/subscribing).
+The CLI is for **administration only**.
 
 ```bash
 # Check service status
@@ -258,9 +256,9 @@ The CLI is for **administration only** (not for publishing/subscribing).
 ./hooklet-cli webhook list
 ./hooklet-cli webhook delete <id>
 
-# User management  
-./hooklet-cli user create <name> [--subscriptions=topic1,topic2]
-./hooklet-cli user list
+# Consumer management  
+./hooklet-cli consumer create <name> [--subscriptions=topic1,topic2]
+./hooklet-cli consumer list
 ```
 
 ### Remote Administration
@@ -289,21 +287,6 @@ export HOOKLET_ADMIN_TOKEN=secret123
 | `HOOKLET_MESSAGE_TTL` | `300000` | Message TTL in queue (ms) |
 | `HOOKLET_QUEUE_EXPIRY` | `3600000` | Unused queue expiry (ms) |
 
----
-
-## Security Model
-
-1. **Strict Topic Registration**: Webhooks must be created via admin before use. Unknown topics return `404`.
-
-2. **Hashed URLs**: Webhook URLs use SHA256 of the topic name (`/webhook/<hash>`), preventing enumeration.
-
-3. **Token Authentication**: WebSocket clients must authenticate via message (not URL) to prevent token leakage in logs.
-
-4. **Subscription Permissions**: Users can only subscribe to topics explicitly granted to them (or `*` for all).
-
-5. **Dual-Listener Architecture**: 
-   - **TCP (public)**: Webhook ingestion + WebSocket streaming
-   - **Unix Socket (local)**: Admin operations with implicit trust
 
 ---
 
@@ -345,9 +328,9 @@ sequenceDiagram
     Hooklet-->>Client: Connection accepted
     Client->>Hooklet: {"type":"auth","token":"..."}
     Hooklet->>DB: Validate token (SHA256)
-    DB-->>Hooklet: User + permissions
+    DB-->>Hooklet: Consumer + permissions
     alt Token valid & authorized
-        Hooklet-->>Client: {"type":"auth_ok","user":"..."}
+        Hooklet-->>Client: {"type":"auth_ok","consumer":"..."}
         loop Messages
             Hooklet-->>Client: Webhook payload
         end
@@ -379,7 +362,3 @@ sequenceDiagram
 ```
 
 ---
-
-## License
-
-MIT

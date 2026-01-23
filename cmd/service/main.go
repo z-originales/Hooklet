@@ -86,7 +86,7 @@ func main() {
 	// Admin endpoints
 	mux.HandleFunc("/admin/webhooks", srv.handleAdminWebhooks)
 	mux.HandleFunc("/admin/webhooks/", srv.handleAdminWebhookDelete) // for delete
-	mux.HandleFunc("/admin/users", srv.handleAdminUsers)
+	mux.HandleFunc("/admin/consumers", srv.handleAdminConsumers)
 
 	// Webhook ingestion (external services POST here)
 	mux.HandleFunc(api.RoutePublish, srv.handleWebhook)
@@ -153,7 +153,7 @@ func main() {
 	// Let's attach the handlers directly.
 	adminMux.HandleFunc("/admin/webhooks", srv.handleAdminWebhooks)
 	adminMux.HandleFunc("/admin/webhooks/", srv.handleAdminWebhookDelete)
-	adminMux.HandleFunc("/admin/users", srv.handleAdminUsers)
+	adminMux.HandleFunc("/admin/consumers", srv.handleAdminConsumers)
 
 	// Run servers in goroutines
 	var wg sync.WaitGroup
@@ -340,22 +340,22 @@ func (s *server) handleAdminWebhookDelete(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /admin/users (create)
-// GET /admin/users (list)
-func (s *server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+// POST /admin/consumers (create)
+// GET /admin/consumers (list)
+func (s *server) handleAdminConsumers(w http.ResponseWriter, r *http.Request) {
 	if !s.checkAdminAuth(w, r) {
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		users, err := s.db.ListUsers()
+		consumers, err := s.db.ListConsumers()
 		if err != nil {
-			log.Error("Failed to list users", "error", err)
+			log.Error("Failed to list consumers", "error", err)
 			writeError(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, users)
+		writeJSON(w, consumers)
 
 	case http.MethodPost:
 		var req struct {
@@ -381,11 +381,11 @@ func (s *server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		// Let's return it in response but store a "hash" (simulate).
 		// For simplicity in this iteration: store the token as is in token_hash column, but treat it as a secret.
 
-		u, err := s.db.CreateUser(req.Name, token, req.Subscriptions)
+		consumer, err := s.db.CreateConsumer(req.Name, token, req.Subscriptions)
 		if err != nil {
-			log.Error("Failed to create user", "error", err)
+			log.Error("Failed to create consumer", "error", err)
 			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-				writeError(w, "User name already exists", http.StatusConflict)
+				writeError(w, "Consumer name already exists", http.StatusConflict)
 				return
 			}
 			writeError(w, "Internal Server Error", http.StatusInternalServerError)
@@ -394,11 +394,11 @@ func (s *server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 
 		// Return the token to the admin only once
 		resp := struct {
-			*store.User
+			*store.Consumer
 			Token string `json:"token"`
 		}{
-			User:  u,
-			Token: token,
+			Consumer: consumer,
+			Token:    token,
 		}
 		writeJSON(w, resp)
 
@@ -506,12 +506,12 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	authCtx, authCancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer authCancel()
 
-	var user *store.User
+	var consumer *store.Consumer
 
 	// Check if this is a trusted admin connection (CLI via Unix socket)
 	if bypass, ok := r.Context().Value(ctxKeyAdminBypass).(bool); ok && bypass {
-		// Create a synthetic admin user for tracking
-		user = &store.User{
+		// Create a synthetic admin consumer for tracking
+		consumer = &store.Consumer{
 			ID:            0,
 			Name:          "admin-cli",
 			Subscriptions: "*",
@@ -538,13 +538,13 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate Token against DB
-		user, err = s.db.GetUserByToken(authReq.Token)
+		consumer, err = s.db.GetConsumerByToken(authReq.Token)
 		if err != nil {
 			log.Error("Failed to validate token", "error", err)
 			conn.Close(websocket.StatusInternalError, "Internal error")
 			return
 		}
-		if user == nil {
+		if consumer == nil {
 			log.Warn("WebSocket connection with invalid token", "remote", r.RemoteAddr)
 			conn.Close(websocket.StatusPolicyViolation, "Invalid token")
 			return
@@ -552,14 +552,14 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authorization Check (Subscriptions)
-	// User must have permission to subscribe to the requested topics
-	// user.Subscriptions can be "*" or "topic1,topic2"
+	// Consumer must have permission to subscribe to the requested topics
+	// consumer.Subscriptions can be "*" or "topic1,topic2"
 	allowed := false
-	if user.Subscriptions == "*" {
+	if consumer.Subscriptions == "*" {
 		allowed = true
 	} else {
-		// Check each requested topic against user subscriptions
-		subs := strings.Split(user.Subscriptions, ",")
+		// Check each requested topic against consumer subscriptions
+		subs := strings.Split(consumer.Subscriptions, ",")
 		subMap := make(map[string]bool)
 		for _, sub := range subs {
 			subMap[strings.TrimSpace(sub)] = true
@@ -577,13 +577,13 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !allowed {
-		log.Warn("User tried to subscribe to unauthorized topics", "user", user.Name, "topics", topics)
+		log.Warn("Consumer tried to subscribe to unauthorized topics", "consumer", consumer.Name, "topics", topics)
 		conn.Close(websocket.StatusPolicyViolation, "Unauthorized topics")
 		return
 	}
 
 	// Send auth success acknowledgement
-	ack := map[string]string{"type": "auth_ok", "user": user.Name}
+	ack := map[string]string{"type": "auth_ok", "consumer": consumer.Name}
 	ackBytes, _ := json.Marshal(ack)
 	if err := conn.Write(r.Context(), websocket.MessageText, ackBytes); err != nil {
 		log.Error("Failed to send auth ack", "error", err)
@@ -591,8 +591,8 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Consumer ID is now the User ID / Name to ensure tracking
-	consumerID := fmt.Sprintf("%s-%d", user.Name, user.ID)
+	// Consumer ID is now the Consumer ID / Name to ensure tracking
+	consumerID := fmt.Sprintf("%s-%d", consumer.Name, consumer.ID)
 
 	log.Info("WebSocket client authenticated", "consumer_id", consumerID, "topics", topics, "remote", r.RemoteAddr)
 

@@ -18,13 +18,14 @@ type Webhook struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// User represents a system user with access tokens
-type User struct {
+// Consumer represents a WebSocket client that consumes webhooks.
+// Consumers authenticate with tokens and can subscribe to specific topics.
+type Consumer struct {
 	ID            int64     `json:"id"`
 	Name          string    `json:"name"`
 	TokenHash     string    `json:"-"`
 	CreatedAt     time.Time `json:"created_at"`
-	Subscriptions string    `json:"subscriptions"` // simple comma-separated list or "*"
+	Subscriptions string    `json:"subscriptions"` // comma-separated topic names or "*" for all
 }
 
 type Store struct {
@@ -75,7 +76,7 @@ func (s *Store) init() error {
 		// Let's just create indexes which is safer.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_webhooks_topic_hash ON webhooks(topic_hash);`,
 
-		`CREATE TABLE IF NOT EXISTS users (
+		`CREATE TABLE IF NOT EXISTS consumers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
 			token_hash TEXT NOT NULL,
@@ -184,17 +185,17 @@ func (s *Store) DeleteWebhook(id int64) error {
 	return nil
 }
 
-// User Methods
+// Consumer Methods
 
-func (s *Store) CreateUser(name, token string, subscriptions string) (*User, error) {
+func (s *Store) CreateConsumer(name, token string, subscriptions string) (*Consumer, error) {
 	// IMPORTANT: Hash token before storing
 	tokenHash := HashString(token)
 
-	query := `INSERT INTO users (name, token_hash, subscriptions, created_at) VALUES (?, ?, ?, ?)`
+	query := `INSERT INTO consumers (name, token_hash, subscriptions, created_at) VALUES (?, ?, ?, ?)`
 	now := time.Now()
 	res, err := s.db.Exec(query, name, tokenHash, subscriptions, now)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, fmt.Errorf("failed to create consumer: %w", err)
 	}
 
 	id, err := res.LastInsertId()
@@ -202,7 +203,7 @@ func (s *Store) CreateUser(name, token string, subscriptions string) (*User, err
 		return nil, fmt.Errorf("failed to get last insert id: %w", err)
 	}
 
-	return &User{
+	return &Consumer{
 		ID:            id,
 		Name:          name,
 		TokenHash:     tokenHash, // Stored hash
@@ -211,42 +212,42 @@ func (s *Store) CreateUser(name, token string, subscriptions string) (*User, err
 	}, nil
 }
 
-// GetUserByToken validates a token by hashing it and checking the DB.
-func (s *Store) GetUserByToken(token string) (*User, error) {
+// GetConsumerByToken validates a token by hashing it and checking the DB.
+func (s *Store) GetConsumerByToken(token string) (*Consumer, error) {
 	hash := HashString(token)
-	return s.GetUserByTokenHash(hash)
+	return s.GetConsumerByTokenHash(hash)
 }
 
-func (s *Store) ListUsers() ([]User, error) {
-	query := `SELECT id, name, created_at, subscriptions FROM users ORDER BY created_at DESC`
+func (s *Store) ListConsumers() ([]Consumer, error) {
+	query := `SELECT id, name, created_at, subscriptions FROM consumers ORDER BY created_at DESC`
 	rows, err := s.db.Query(query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list users: %w", err)
+		return nil, fmt.Errorf("failed to list consumers: %w", err)
 	}
 	defer rows.Close()
 
-	var users []User
+	var consumers []Consumer
 	for rows.Next() {
-		var u User
-		if err := rows.Scan(&u.ID, &u.Name, &u.CreatedAt, &u.Subscriptions); err != nil {
+		var c Consumer
+		if err := rows.Scan(&c.ID, &c.Name, &c.CreatedAt, &c.Subscriptions); err != nil {
 			return nil, err
 		}
-		users = append(users, u)
+		consumers = append(consumers, c)
 	}
-	return users, nil
+	return consumers, nil
 }
 
-// GetUserByTokenHash is needed for validation later
-func (s *Store) GetUserByTokenHash(hash string) (*User, error) {
-	query := `SELECT id, name, created_at, subscriptions FROM users WHERE token_hash = ?`
-	var u User
-	err := s.db.QueryRow(query, hash).Scan(&u.ID, &u.Name, &u.CreatedAt, &u.Subscriptions)
+// GetConsumerByTokenHash retrieves a consumer by their hashed token.
+func (s *Store) GetConsumerByTokenHash(hash string) (*Consumer, error) {
+	query := `SELECT id, name, created_at, subscriptions FROM consumers WHERE token_hash = ?`
+	var c Consumer
+	err := s.db.QueryRow(query, hash).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.Subscriptions)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	u.TokenHash = hash
-	return &u, nil
+	c.TokenHash = hash
+	return &c, nil
 }

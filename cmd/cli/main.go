@@ -27,9 +27,9 @@ var CLI struct {
 	Socket     string `help:"Unix socket path" env:"HOOKLET_SOCKET"`
 
 	// Commands (Administration only - no publish/subscribe)
-	Status  StatusCmd  `cmd:"" help:"Check service status"`
-	Webhook WebhookCmd `cmd:"" help:"Manage webhooks"`
-	User    UserCmd    `cmd:"" help:"Manage users"`
+	Status   StatusCmd   `cmd:"" help:"Check service status"`
+	Webhook  WebhookCmd  `cmd:"" help:"Manage webhooks"`
+	Consumer ConsumerCmd `cmd:"" help:"Manage consumers"`
 }
 
 // Context holds shared CLI context.
@@ -197,23 +197,23 @@ func (c *WebhookDeleteCmd) Run(ctx *Context) error {
 	return nil
 }
 
-// User Commands
-type UserCmd struct {
-	Create UserCreateCmd `cmd:"" help:"Create a new user"`
-	List   UserListCmd   `cmd:"" help:"List all users"`
+// Consumer Commands
+type ConsumerCmd struct {
+	Create ConsumerCreateCmd `cmd:"" help:"Create a new consumer"`
+	List   ConsumerListCmd   `cmd:"" help:"List all consumers"`
 }
 
-type UserCreateCmd struct {
-	Name          string `arg:"" help:"Name of the user"`
+type ConsumerCreateCmd struct {
+	Name          string `arg:"" help:"Name of the consumer"`
 	Subscriptions string `help:"Comma separated list of subscribed topics (or *)" default:""`
 }
 
-func (c *UserCreateCmd) Run(ctx *Context) error {
+func (c *ConsumerCreateCmd) Run(ctx *Context) error {
 	req := map[string]string{
 		"name":          c.Name,
 		"subscriptions": c.Subscriptions,
 	}
-	resp, err := ctx.adminRequest(http.MethodPost, "/admin/users", req)
+	resp, err := ctx.adminRequest(http.MethodPost, "/admin/consumers", req)
 	if err != nil {
 		return err
 	}
@@ -225,23 +225,23 @@ func (c *UserCreateCmd) Run(ctx *Context) error {
 	}
 
 	var res struct {
-		store.User
+		store.Consumer
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return err
 	}
 
-	fmt.Printf("User created: %s (ID: %d)\n", res.Name, res.ID)
+	fmt.Printf("Consumer created: %s (ID: %d)\n", res.Name, res.ID)
 	fmt.Printf("Token: %s\n", res.Token)
 	fmt.Println("SAVE THIS TOKEN! It will not be shown again.")
 	return nil
 }
 
-type UserListCmd struct{}
+type ConsumerListCmd struct{}
 
-func (c *UserListCmd) Run(ctx *Context) error {
-	resp, err := ctx.adminRequest(http.MethodGet, "/admin/users", nil)
+func (c *ConsumerListCmd) Run(ctx *Context) error {
+	resp, err := ctx.adminRequest(http.MethodGet, "/admin/consumers", nil)
 	if err != nil {
 		return err
 	}
@@ -252,14 +252,14 @@ func (c *UserListCmd) Run(ctx *Context) error {
 		return fmt.Errorf("failed: %s", body)
 	}
 
-	var users []store.User
-	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+	var consumers []store.Consumer
+	if err := json.NewDecoder(resp.Body).Decode(&consumers); err != nil {
 		return err
 	}
 
-	fmt.Println("Users:")
-	for _, u := range users {
-		fmt.Printf("  %d: %s (Subs: %s)\n", u.ID, u.Name, u.Subscriptions)
+	fmt.Println("Consumers:")
+	for _, c := range consumers {
+		fmt.Printf("  %d: %s (Subs: %s)\n", c.ID, c.Name, c.Subscriptions)
 	}
 	return nil
 }
