@@ -4,10 +4,10 @@ services:
     container_name: hooklet-rabbitmq
     ports:
       - "127.0.0.1:5672:5672"   # AMQP protocol port
-      - "127.0.0.1:15672:15672" # Management UI port
+      - "127.0.0.1:15672:15672" # Management UI port optionnal
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: changeme
+      RABBITMQ_DEFAULT_PASS: changeme
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
