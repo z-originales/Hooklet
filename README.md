@@ -309,26 +309,73 @@ export HOOKLET_ADMIN_TOKEN=secret123
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    subgraph Internet
+        Stripe[Stripe / GitHub / etc.]
+    end
+
+    subgraph VPS["Public VPS"]
+        Hooklet[Hooklet Service]
+        RabbitMQ[(RabbitMQ)]
+        SQLite[(SQLite)]
+    end
+
+    subgraph Private["Private Network"]
+        App1[Your App 1]
+        App2[Your App 2]
+    end
+
+    Stripe -->|POST /webhook/hash| Hooklet
+    Hooklet <--> RabbitMQ
+    Hooklet <--> SQLite
+    Hooklet <-.->|WebSocket| App1
+    Hooklet <-.->|WebSocket| App2
 ```
-                                    +-----------------+
-                                    |    RabbitMQ     |
-                                    |  Topic Exchange |
-                                    +--------+--------+
-                                             |
-+------------------+    POST /webhook/<hash> |    +------------------+
-| External Service | ----------------------->|    |   Your App       |
-| (Stripe, GitHub) |                         |    | (behind NAT)     |
-+------------------+                         |    +--------+---------+
-                                             |             |
-                                    +--------v--------+    | WebSocket
-                                    |    Hooklet      |<---+
-                                    |    Service      |
-                                    +--------+--------+
-                                             |
-                                    +--------v--------+
-                                    |     SQLite      |
-                                    | (Users/Webhooks)|
-                                    +-----------------+
+
+### Authentication Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Hooklet
+    participant DB as SQLite
+
+    Client->>Hooklet: Connect WS /ws?topics=stripe
+    Hooklet-->>Client: Connection accepted
+    Client->>Hooklet: {"type":"auth","token":"..."}
+    Hooklet->>DB: Validate token (SHA256)
+    DB-->>Hooklet: User + permissions
+    alt Token valid & authorized
+        Hooklet-->>Client: {"type":"auth_ok","user":"..."}
+        loop Messages
+            Hooklet-->>Client: Webhook payload
+        end
+    else Invalid or unauthorized
+        Hooklet-->>Client: Close connection
+    end
+```
+
+### Webhook Ingestion Flow
+
+```mermaid
+sequenceDiagram
+    participant External as External Service
+    participant Hooklet
+    participant DB as SQLite
+    participant MQ as RabbitMQ
+
+    External->>Hooklet: POST /webhook/<hash>
+    Hooklet->>DB: Lookup webhook by hash
+    alt Webhook exists
+        DB-->>Hooklet: Webhook found
+        Hooklet->>MQ: Publish to exchange
+        MQ-->>Hooklet: ACK
+        Hooklet-->>External: 202 Accepted
+    else Unknown hash
+        DB-->>Hooklet: Not found
+        Hooklet-->>External: 404 Not Found
+    end
 ```
 
 ---
