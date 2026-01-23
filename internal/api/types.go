@@ -14,9 +14,10 @@ const (
 
 // Default configuration
 const (
-	DefaultPort      = "8080"
-	DefaultHost      = "localhost"
-	DefaultRabbitURL = "amqp://guest:guest@localhost:5672/"
+	DefaultPort       = "8080"
+	DefaultHost       = "localhost"
+	DefaultRabbitURL  = "amqp://guest:guest@localhost:5672/"
+	DefaultSocketPath = "./hooklet.sock"
 
 	// DefaultMessageTTL is how long messages stay in a queue before expiring (milliseconds).
 	// If a consumer doesn't read a message within this time, it's discarded.

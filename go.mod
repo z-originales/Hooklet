@@ -3,7 +3,6 @@ module hooklet
 go 1.24.4
 
 require (
-	github.com/alecthomas/kong v1.13.0
 	github.com/charmbracelet/log v0.4.2
 	github.com/coder/websocket v1.8.14
 	github.com/rabbitmq/amqp091-go v1.10.0
