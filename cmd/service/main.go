@@ -249,15 +249,6 @@ func (s *server) checkAdminAuth(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	// Check if request is local (TCP localhost)
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	isLocal := err == nil && (host == "localhost" || host == "127.0.0.1" || host == "::1")
-
-	// If local and no token provided, allow (dev mode convenience)
-	if isLocal && token == "" {
-		return true
-	}
-
 	// Otherwise (remote OR local with token provided), enforce verification
 	if token != expected {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
