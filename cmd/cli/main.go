@@ -9,9 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"strings"
-	"syscall"
 	"time"
 
 	"hooklet/internal/api"
@@ -19,7 +16,6 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/log"
-	"github.com/coder/websocket"
 )
 
 // CLI defines the command-line interface structure.
@@ -30,12 +26,8 @@ var CLI struct {
 	AdminToken string `help:"Admin token for management commands" env:"HOOKLET_ADMIN_TOKEN"`
 	Socket     string `help:"Unix socket path" env:"HOOKLET_SOCKET"`
 
-	// Commands
-	Status    StatusCmd    `cmd:"" help:"Check service status"`
-	Topics    TopicsCmd    `cmd:"" help:"List active topics"`
-	Publish   PublishCmd   `cmd:"" help:"Publish a message to a topic"`
-	Subscribe SubscribeCmd `cmd:"" help:"Subscribe to a topic and stream messages"`
-
+	// Commands (Administration only - no publish/subscribe)
+	Status  StatusCmd  `cmd:"" help:"Check service status"`
 	Webhook WebhookCmd `cmd:"" help:"Manage webhooks"`
 	User    UserCmd    `cmd:"" help:"Manage users"`
 }
@@ -86,14 +78,6 @@ func (c *Context) baseURL() string {
 	// For Unix Socket, the host part is ignored by our custom DialContext
 	// but we need a valid URL structure.
 	return "http://unix"
-}
-
-func (c *Context) wsURL() string {
-	// If Host is set, use TCP URL
-	if c.Host != "" {
-		return fmt.Sprintf("ws://%s:%s", c.Host, c.Port)
-	}
-	return "ws://unix"
 }
 
 func (c *Context) adminRequest(method, path string, body any) (*http.Response, error) {
@@ -308,207 +292,6 @@ func (c *StatusCmd) Run(ctx *Context) error {
 	fmt.Printf("RabbitMQ:  %s\n", status.RabbitMQ)
 
 	return nil
-}
-
-// TopicsCmd lists active topics.
-type TopicsCmd struct{}
-
-func (c *TopicsCmd) Run(ctx *Context) error {
-	url := ctx.baseURL() + api.RouteTopics
-
-	resp, err := ctx.getClient().Get(url)
-	if err != nil {
-		return fmt.Errorf("failed to connect to service: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("service error: %s", body)
-	}
-
-	var topics api.TopicsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&topics); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if len(topics.Topics) == 0 {
-		fmt.Println("No active topics")
-		return nil
-	}
-
-	fmt.Println("Active topics:")
-	for _, topic := range topics.Topics {
-		fmt.Printf("  - %s\n", topic)
-	}
-
-	return nil
-}
-
-// PublishCmd publishes a message to a topic.
-type PublishCmd struct {
-	Topic   string `arg:"" help:"Topic to publish to"`
-	Message string `arg:"" optional:"" help:"Message to publish (reads from stdin if not provided)"`
-	File    string `short:"f" help:"Read message from file"`
-}
-
-func (c *PublishCmd) Run(ctx *Context) error {
-	var payload []byte
-	var err error
-
-	// Determine message source
-	switch {
-	case c.File != "":
-		payload, err = os.ReadFile(c.File)
-		if err != nil {
-			return fmt.Errorf("failed to read file: %w", err)
-		}
-	case c.Message != "":
-		payload = []byte(c.Message)
-	default:
-		// Read from stdin
-		payload, err = io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("failed to read stdin: %w", err)
-		}
-	}
-
-	if len(payload) == 0 {
-		return fmt.Errorf("empty message")
-	}
-
-	url := ctx.baseURL() + api.RoutePublish + c.Topic
-
-	// TODO: Add authentication header when implementing security
-	// req.Header.Set(api.HeaderAuthToken, ctx.Token)
-
-	resp, err := ctx.getClient().Post(url, "application/json", bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("failed to publish: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("publish failed: %s", body)
-	}
-
-	fmt.Printf("Published %d bytes to topic '%s'\n", len(payload), c.Topic)
-	return nil
-}
-
-// SubscribeCmd subscribes to topics and streams messages.
-type SubscribeCmd struct {
-	Topics []string `arg:"" help:"Topics to subscribe to (comma-separated)"`
-	Token  string   `help:"Authentication token (required for TCP connections)" short:"t" env:"HOOKLET_USER_TOKEN"`
-	Raw    bool     `short:"r" help:"Output raw messages without formatting"`
-}
-
-func (c *SubscribeCmd) Run(ctx *Context) error {
-	// Build WebSocket URL
-	// ws://host:port/ws/?topics=t1,t2
-	u := ctx.wsURL() + api.RouteSubscribe
-
-	// Append topics as query params
-	if len(c.Topics) > 0 {
-		u += "?" + api.QueryParamTopics + "=" + strings.Join(c.Topics, ",")
-	} else {
-		return fmt.Errorf("at least one topic is required")
-	}
-
-	bgCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle interrupt signal for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		fmt.Println("\nDisconnecting...")
-		cancel()
-	}()
-
-	// Connect to WebSocket
-	// Configure dial options for Unix socket support if needed
-	opts := &websocket.DialOptions{}
-	isUnixSocket := ctx.Host == ""
-
-	if isUnixSocket {
-		// Unix socket connection
-		socketPath := ctx.Socket
-		if socketPath == "" {
-			socketPath = api.DefaultSocketPath
-		}
-		opts.HTTPClient = &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-					return net.Dial("unix", socketPath)
-				},
-			},
-		}
-	}
-
-	conn, _, err := websocket.Dial(bgCtx, u, opts)
-	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Authenticate via message (not URL) to prevent token leakage in logs
-	// Unix socket connections are trusted and don't need auth message,
-	// but the server handles this via context bypass
-	if !isUnixSocket {
-		if c.Token == "" {
-			conn.Close(websocket.StatusNormalClosure, "")
-			return fmt.Errorf("token required for TCP connections (use --token or HOOKLET_USER_TOKEN)")
-		}
-
-		authMsg := map[string]string{"type": "auth", "token": c.Token}
-		authBytes, _ := json.Marshal(authMsg)
-		if err := conn.Write(bgCtx, websocket.MessageText, authBytes); err != nil {
-			return fmt.Errorf("failed to send auth: %w", err)
-		}
-
-		// Wait for auth response
-		_, respBytes, err := conn.Read(bgCtx)
-		if err != nil {
-			return fmt.Errorf("auth failed: %w", err)
-		}
-
-		var resp map[string]string
-		if err := json.Unmarshal(respBytes, &resp); err != nil || resp["type"] != "auth_ok" {
-			return fmt.Errorf("authentication failed")
-		}
-
-		if !c.Raw {
-			fmt.Printf("Authenticated as: %s\n", resp["user"])
-		}
-	}
-
-	if !c.Raw {
-		fmt.Printf("Subscribed to topics '%v' (Ctrl+C to exit)\n", c.Topics)
-		fmt.Println(strings.Repeat("-", 40))
-	}
-
-	// Read messages
-	for {
-		_, msg, err := conn.Read(bgCtx)
-		if err != nil {
-			if bgCtx.Err() != nil {
-				// Context cancelled (user interrupt)
-				return nil
-			}
-			return fmt.Errorf("connection error: %w", err)
-		}
-
-		if c.Raw {
-			fmt.Println(string(msg))
-		} else {
-			// Pretty print with timestamp
-			fmt.Printf("[%s] %s\n", time.Now().Format("15:04:05"), string(msg))
-		}
-	}
 }
 
 func main() {
