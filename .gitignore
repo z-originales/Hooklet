@@ -1,0 +1,18 @@
+# Binaries
+hooklet
+hooklet.exe
+hooklet-service
+hooklet-service.exe
+hooklet-cli
+hooklet-cli.exe
+
+# Local configs/data
+hooklet.db
+hooklet.sock
+*.log
+
+# OS
+.DS_Store
+
+# Agent Instructions (Local only)
+AGENTS.md
