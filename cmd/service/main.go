@@ -33,6 +33,8 @@ type server struct {
 }
 
 // Context key for admin bypass
+// This key is private to the package, ensuring only this package can create or check it.
+// This prevents external manipulation of the context to bypass authentication.
 type contextKey string
 
 const ctxKeyAdminBypass contextKey = "admin_bypass"
@@ -170,13 +172,12 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Use adminMux for the socket
-			// We need to inject a context value or similar to indicate this came from the trusted socket
-			// so checkAdminAuth can skip token checks.
-			// Or we can just rely on checkAdminAuth inspecting the request properties if net.Conn is unix.
-			// Unfortunately http.Request.RemoteAddr for unix sockets is usually "@" or empty or "pipe".
-			// A middleware approach is cleaner.
-
+			// 2. Unix Socket Server (Admin)
+			// This handler wraps the admin routes and marks the request as "trusted"
+			// by injecting the ctxKeyAdminBypass into the context.
+			// Since this listener only accepts connections from the local Unix socket
+			// (which is protected by file system permissions), we consider these requests
+			// to be from an authorized local administrator.
 			trustedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Inject trust flag into context
 				ctx := context.WithValue(r.Context(), ctxKeyAdminBypass, true)
@@ -232,6 +233,13 @@ func (s *server) handleTopics(w http.ResponseWriter, r *http.Request) {
 
 // Admin Handlers
 
+// checkAdminAuth verifies if the request is authorized to perform admin actions.
+// It supports two authentication mechanisms:
+//  1. "Admin Bypass" via Context: If the request comes from the Unix socket listener,
+//     it has a special context value (ctxKeyAdminBypass) injected by the trustedHandler.
+//     This allows password-less local administration via the CLI.
+//  2. Token Authentication: For remote requests (TCP/API), a valid X-Hooklet-Admin-Token header
+//     matching the HOOKLET_ADMIN_TOKEN env var is required.
 func (s *server) checkAdminAuth(w http.ResponseWriter, r *http.Request) bool {
 	// 1. Check if request comes from trusted Unix socket (Admin Bypass)
 	if bypass, ok := r.Context().Value(ctxKeyAdminBypass).(bool); ok && bypass {
