@@ -400,6 +400,7 @@ func (c *PublishCmd) Run(ctx *Context) error {
 // SubscribeCmd subscribes to topics and streams messages.
 type SubscribeCmd struct {
 	Topics []string `arg:"" help:"Topics to subscribe to (comma-separated)"`
+	Token  string   `help:"Authentication token (required for TCP connections)" short:"t" env:"HOOKLET_USER_TOKEN"`
 	Raw    bool     `short:"r" help:"Output raw messages without formatting"`
 }
 
@@ -410,14 +411,10 @@ func (c *SubscribeCmd) Run(ctx *Context) error {
 
 	// Append topics as query params
 	if len(c.Topics) > 0 {
-		// Only use query param if topics are provided via args
-		// (API also supports /ws/{topic} but we prefer query params now)
 		u += "?" + api.QueryParamTopics + "=" + strings.Join(c.Topics, ",")
 	} else {
 		return fmt.Errorf("at least one topic is required")
 	}
-
-	// TODO: Add TLS support for production (wss://)
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -435,7 +432,9 @@ func (c *SubscribeCmd) Run(ctx *Context) error {
 	// Connect to WebSocket
 	// Configure dial options for Unix socket support if needed
 	opts := &websocket.DialOptions{}
-	if ctx.Host == "" {
+	isUnixSocket := ctx.Host == ""
+
+	if isUnixSocket {
 		// Unix socket connection
 		socketPath := ctx.Socket
 		if socketPath == "" {
@@ -455,6 +454,37 @@ func (c *SubscribeCmd) Run(ctx *Context) error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Authenticate via message (not URL) to prevent token leakage in logs
+	// Unix socket connections are trusted and don't need auth message,
+	// but the server handles this via context bypass
+	if !isUnixSocket {
+		if c.Token == "" {
+			conn.Close(websocket.StatusNormalClosure, "")
+			return fmt.Errorf("token required for TCP connections (use --token or HOOKLET_USER_TOKEN)")
+		}
+
+		authMsg := map[string]string{"type": "auth", "token": c.Token}
+		authBytes, _ := json.Marshal(authMsg)
+		if err := conn.Write(bgCtx, websocket.MessageText, authBytes); err != nil {
+			return fmt.Errorf("failed to send auth: %w", err)
+		}
+
+		// Wait for auth response
+		_, respBytes, err := conn.Read(bgCtx)
+		if err != nil {
+			return fmt.Errorf("auth failed: %w", err)
+		}
+
+		var resp map[string]string
+		if err := json.Unmarshal(respBytes, &resp); err != nil || resp["type"] != "auth_ok" {
+			return fmt.Errorf("authentication failed")
+		}
+
+		if !c.Raw {
+			fmt.Printf("Authenticated as: %s\n", resp["user"])
+		}
+	}
 
 	if !c.Raw {
 		fmt.Printf("Subscribed to topics '%v' (Ctrl+C to exit)\n", c.Topics)

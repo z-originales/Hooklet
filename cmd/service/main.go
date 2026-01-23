@@ -470,7 +470,9 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleWS upgrades to WebSocket and streams messages from RabbitMQ.
-// GET /ws/{topic}?topics=t1,t2
+// GET /ws/?topics=t1,t2
+// Authentication: Client must send {"type":"auth","token":"..."} as first message.
+// This prevents token leakage via URL query params, logs, or referrer headers.
 func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Parse topics from URL query params
 	var topics []string
@@ -490,12 +492,23 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authentication Check
-	// We check for auth only if the request comes from TCP (external)
-	// If it comes from the admin socket, we trust it (admin bypass for CLI subscribe)
+	// Accept WebSocket connection FIRST, then authenticate via message
+	// This prevents token from appearing in URL/logs
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true, // Allow all origins for POC
+	})
+	if err != nil {
+		log.Error("Failed to accept websocket", "error", err)
+		return
+	}
+
+	// Set a deadline for authentication
+	authCtx, authCancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer authCancel()
+
 	var user *store.User
 
-	// Check if this is a trusted admin connection (CLI)
+	// Check if this is a trusted admin connection (CLI via Unix socket)
 	if bypass, ok := r.Context().Value(ctxKeyAdminBypass).(bool); ok && bypass {
 		// Create a synthetic admin user for tracking
 		user = &store.User{
@@ -503,31 +516,37 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			Name:          "admin-cli",
 			Subscriptions: "*",
 		}
+		log.Debug("WebSocket admin bypass active")
 	} else {
-		// Standard Auth for external clients
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			token = r.Header.Get(api.HeaderAuthToken)
+		// Standard Auth: Wait for auth message from client
+		// Client must send: {"type":"auth","token":"..."}
+		_, authMsg, err := conn.Read(authCtx)
+		if err != nil {
+			log.Warn("WebSocket auth timeout or read error", "remote", r.RemoteAddr, "error", err)
+			conn.Close(websocket.StatusPolicyViolation, "Authentication timeout")
+			return
 		}
 
-		if token == "" {
-			log.Warn("WebSocket connection attempt without token", "remote", r.RemoteAddr)
-			writeError(w, "Authentication required", http.StatusUnauthorized)
+		var authReq struct {
+			Type  string `json:"type"`
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(authMsg, &authReq); err != nil || authReq.Type != "auth" || authReq.Token == "" {
+			log.Warn("WebSocket invalid auth message", "remote", r.RemoteAddr)
+			conn.Close(websocket.StatusPolicyViolation, "Invalid auth message")
 			return
 		}
 
 		// Validate Token against DB
-		// Note: GetUserByToken handles hashing internally
-		var err error
-		user, err = s.db.GetUserByToken(token)
+		user, err = s.db.GetUserByToken(authReq.Token)
 		if err != nil {
 			log.Error("Failed to validate token", "error", err)
-			writeError(w, "Internal Server Error", http.StatusInternalServerError)
+			conn.Close(websocket.StatusInternalError, "Internal error")
 			return
 		}
 		if user == nil {
-			log.Warn("WebSocket connection attempt with invalid token", "remote", r.RemoteAddr)
-			writeError(w, "Invalid token", http.StatusUnauthorized)
+			log.Warn("WebSocket connection with invalid token", "remote", r.RemoteAddr)
+			conn.Close(websocket.StatusPolicyViolation, "Invalid token")
 			return
 		}
 	}
@@ -559,25 +578,23 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	if !allowed {
 		log.Warn("User tried to subscribe to unauthorized topics", "user", user.Name, "topics", topics)
-		writeError(w, "Unauthorized access to one or more topics", http.StatusForbidden)
+		conn.Close(websocket.StatusPolicyViolation, "Unauthorized topics")
+		return
+	}
+
+	// Send auth success acknowledgement
+	ack := map[string]string{"type": "auth_ok", "user": user.Name}
+	ackBytes, _ := json.Marshal(ack)
+	if err := conn.Write(r.Context(), websocket.MessageText, ackBytes); err != nil {
+		log.Error("Failed to send auth ack", "error", err)
+		conn.Close(websocket.StatusInternalError, "Failed to send ack")
 		return
 	}
 
 	// Consumer ID is now the User ID / Name to ensure tracking
 	consumerID := fmt.Sprintf("%s-%d", user.Name, user.ID)
 
-	// Accept WebSocket connection
-	// TODO: Configure allowed origins for production security
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // Allow all origins for POC
-	})
-	if err != nil {
-		log.Error("Failed to accept websocket", "error", err)
-		return
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	log.Info("WebSocket client connected", "consumer_id", consumerID, "topics", topics, "remote", r.RemoteAddr)
+	log.Info("WebSocket client authenticated", "consumer_id", consumerID, "topics", topics, "remote", r.RemoteAddr)
 
 	// Track topics
 	s.mu.Lock()
@@ -600,10 +617,12 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			log.Info("WebSocket client disconnected", "consumer_id", consumerID)
+			conn.Close(websocket.StatusNormalClosure, "")
 			return
 		case msg, ok := <-msgs:
 			if !ok {
 				log.Info("Queue channel closed", "consumer_id", consumerID)
+				conn.Close(websocket.StatusNormalClosure, "Queue closed")
 				return
 			}
 			if err := conn.Write(ctx, websocket.MessageText, msg.Body); err != nil {
