@@ -2,53 +2,31 @@ package queue
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-const (
-	// ExchangeName is the topic exchange where all webhooks are published.
-	// Consumers bind their queues to this exchange with specific routing keys.
-	ExchangeName = "hooklet.webhooks"
-
-	// RoutingKeyPrefix is prepended to webhook IDs to form routing keys.
-	// Example: webhook ID "abc123" becomes routing key "webhook.abc123"
-	RoutingKeyPrefix = "webhook."
-)
-
-// Config holds RabbitMQ queue configuration.
+// Config holds RabbitMQ configuration.
 type Config struct {
-	// MessageTTL is how long messages stay in a queue before expiring (milliseconds).
-	// If a consumer doesn't read a message within this time, it's discarded.
-	// Default: 300000 (5 minutes)
-	MessageTTL int
-
-	// QueueExpiry is how long an unused queue persists before auto-deletion (milliseconds).
-	// If no consumer connects to a queue within this time, RabbitMQ deletes it.
-	// Default: 3600000 (1 hour)
-	QueueExpiry int
-}
-
-// DefaultConfig returns sensible defaults for queue configuration.
-func DefaultConfig() Config {
-	return Config{
-		MessageTTL:  300000,  // 5 minutes - messages expire if not consumed
-		QueueExpiry: 3600000, // 1 hour - queue deleted if no consumers connect
-	}
+	MessageTTL  int // Milliseconds
+	QueueExpiry int // Milliseconds
 }
 
 // Client wraps RabbitMQ connection and channel.
 type Client struct {
 	conn    *amqp.Connection
 	channel *amqp.Channel
-	config  Config
+	cfg     Config
 }
 
-// NewClient connects to RabbitMQ, declares the topic exchange, and returns a ready-to-use client.
-func NewClient(url string, config Config) (*Client, error) {
+const (
+	ExchangeName = "hooklet.webhooks"
+	ExchangeType = "topic"
+)
+
+// NewClient connects to RabbitMQ and returns a ready-to-use client.
+func NewClient(url string, cfg Config) (*Client, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
@@ -60,14 +38,13 @@ func NewClient(url string, config Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
-	// Declare the topic exchange (idempotent)
-	// All webhooks are published to this exchange with routing key "webhook.{webhookId}"
+	// Declare the Topic Exchange immediately
 	err = ch.ExchangeDeclare(
 		ExchangeName, // name
-		"topic",      // type: allows routing key patterns like "webhook.*" or "webhook.#"
-		true,         // durable: survives broker restart
-		false,        // auto-deleted: don't delete when no queues bound
-		false,        // internal: can receive publishes from clients
+		ExchangeType, // type
+		true,         // durable
+		false,        // auto-deleted
+		false,        // internal
 		false,        // no-wait
 		nil,          // arguments
 	)
@@ -77,7 +54,7 @@ func NewClient(url string, config Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to declare exchange: %w", err)
 	}
 
-	return &Client{conn: conn, channel: ch, config: config}, nil
+	return &Client{conn: conn, channel: ch, cfg: cfg}, nil
 }
 
 // Close cleanly shuts down the channel and connection.
@@ -91,10 +68,10 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Publish sends a webhook message to the topic exchange.
-// The webhookID is used as the routing key suffix (e.g., "webhook.{webhookID}").
-func (c *Client) Publish(ctx context.Context, webhookID string, body []byte) error {
-	routingKey := RoutingKeyPrefix + webhookID
+// Publish sends a message to the topic exchange.
+func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
+	// Routing key format: webhook.<topic>
+	routingKey := fmt.Sprintf("webhook.%s", topic)
 
 	err := c.channel.PublishWithContext(
 		ctx,
@@ -103,9 +80,8 @@ func (c *Client) Publish(ctx context.Context, webhookID string, body []byte) err
 		false,        // mandatory
 		false,        // immediate
 		amqp.Publishing{
-			ContentType:  "application/json",
-			Body:         body,
-			DeliveryMode: amqp.Persistent, // survive broker restart
+			ContentType: "application/json",
+			Body:        body,
 		},
 	)
 	if err != nil {
@@ -115,56 +91,54 @@ func (c *Client) Publish(ctx context.Context, webhookID string, body []byte) err
 	return nil
 }
 
-// Subscribe creates a queue for the given consumer token and binds it to the specified webhook IDs.
-// Each consumer gets their own queue (named after a hash of their token).
-// Multiple consumers can subscribe to the same webhookID - each gets a copy of the message.
-//
-// Returns a channel of messages that will receive webhooks matching any of the bound webhookIDs.
-func (c *Client) Subscribe(consumerToken string, webhookIDs []string) (<-chan amqp.Delivery, error) {
-	// Generate queue name from token hash (don't expose raw tokens in RabbitMQ)
-	queueName := c.queueNameForToken(consumerToken)
+// Subscribe creates a dedicated queue for the consumer and binds it to the requested topics.
+func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Delivery, error) {
+	// 1. Declare a unique, auto-delete queue for this consumer
+	queueName := fmt.Sprintf("hooklet-ws-%s", consumerID)
 
-	// Queue arguments for TTL and expiry
-	args := amqp.Table{
-		"x-message-ttl": c.config.MessageTTL,  // messages expire after this duration
-		"x-expires":     c.config.QueueExpiry, // queue deleted if unused for this duration
+	args := amqp.Table{}
+	if c.cfg.MessageTTL > 0 {
+		args["x-message-ttl"] = c.cfg.MessageTTL
+	}
+	if c.cfg.QueueExpiry > 0 {
+		args["x-expires"] = c.cfg.QueueExpiry
 	}
 
-	// Declare the consumer's queue
-	_, err := c.channel.QueueDeclare(
+	q, err := c.channel.QueueDeclare(
 		queueName,
-		true,  // durable: queue survives broker restart
-		false, // delete when unused: handled by x-expires instead
-		false, // exclusive: allow multiple connections to same queue
+		false, // durable (false = transient, fits WS clients)
+		true,  // delete when unused (true = cleanup on disconnect)
+		true,  // exclusive (true = only this connection can use it)
 		false, // no-wait
-		args,
+		args,  // arguments (TTL, Expiry)
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to declare queue: %w", err)
+		return nil, fmt.Errorf("failed to declare consumer queue: %w", err)
 	}
 
-	// Bind queue to exchange for each webhookID
-	// This is what allows the consumer to receive specific webhooks
-	for _, webhookID := range webhookIDs {
-		routingKey := RoutingKeyPrefix + webhookID
+	// 2. Bind the queue to the exchange for each topic
+	for _, topic := range topics {
+		routingKey := fmt.Sprintf("webhook.%s", topic)
 		err := c.channel.QueueBind(
-			queueName,    // queue name
-			routingKey,   // routing key (e.g., "webhook.abc123")
+			q.Name,       // queue name
+			routingKey,   // routing key
 			ExchangeName, // exchange
-			false,        // no-wait
-			nil,          // arguments
+			false,
+			nil,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to bind queue to %s: %w", routingKey, err)
+			// Try cleanup
+			c.channel.QueueDelete(queueName, false, false, false)
+			return nil, fmt.Errorf("failed to bind topic %s: %w", topic, err)
 		}
 	}
 
-	// Start consuming
+	// 3. Start consuming
 	msgs, err := c.channel.Consume(
-		queueName,
+		q.Name,
 		"",    // consumer tag (auto-generated)
-		true,  // auto-ack: message acknowledged on delivery
-		false, // exclusive: allow multiple consumers on same queue
+		false, // auto-ack (false = we ack manually after sending to WS)
+		true,  // exclusive
 		false, // no-local
 		false, // no-wait
 		nil,   // arguments
@@ -174,12 +148,4 @@ func (c *Client) Subscribe(consumerToken string, webhookIDs []string) (<-chan am
 	}
 
 	return msgs, nil
-}
-
-// queueNameForToken generates a consistent queue name from a consumer token.
-// Uses SHA256 hash to avoid exposing tokens in RabbitMQ management UI.
-func (c *Client) queueNameForToken(token string) string {
-	hash := sha256.Sum256([]byte(token))
-	shortHash := hex.EncodeToString(hash[:8]) // 16 chars is enough for uniqueness
-	return "hooklet." + shortHash
 }
