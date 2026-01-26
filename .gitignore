@@ -6,9 +6,11 @@ hooklet-cli
 hooklet.db
 hooklet.sock
 *.log
+*test.yml
 
 # OS
 .DS_Store
 
 # Agent Instructions (Local only)
 AGENTS.md
+

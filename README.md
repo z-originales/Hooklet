@@ -185,7 +185,11 @@ hooklet-cli --host=your-server.com --admin-token=secret123 webhook list
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP server port |
-| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
+| `RABBITMQ_URL` | *(built from components)* | Full RabbitMQ URL (overrides components) |
+| `RABBITMQ_HOST` | `localhost` | RabbitMQ host |
+| `RABBITMQ_PORT` | `5672` | RabbitMQ port |
+| `RABBITMQ_USER` | `guest` | RabbitMQ username |
+| `RABBITMQ_PASS` | `guest` | RabbitMQ password |
 | `HOOKLET_DB_PATH` | `./hooklet.db` | SQLite database path |
 | `HOOKLET_SOCKET` | `./hooklet.sock` | Unix socket for local CLI |
 | `HOOKLET_ADMIN_TOKEN` | — | Required for remote admin |
