@@ -15,7 +15,7 @@ No inbound ports needed. No ngrok. Just outbound WebSocket connections.
 - **⚡ Real-Time** — Instant delivery via WebSocket
 - **📡 Multi-Topic** — Subscribe to multiple webhooks on one connection  
 - **🔒 Secure by Default** — Token auth, hashed URLs, strict topic registration
-- **🐰 Reliable** — Built on RabbitMQ with message persistence
+- **🐰 Reliable** — Built on RabbitMQ with message persistence (5 min retention)
 - **🪶 Lightweight** — Single binary, SQLite storage, minimal dependencies
 
 ---
@@ -143,8 +143,29 @@ hooklet-cli webhook delete <id>
 hooklet-cli consumer create <name> [--subscriptions=topic1,topic2]
 hooklet-cli consumer list
 hooklet-cli consumer delete <id>
-hooklet-cli consumer update <id> --subscriptions=topic1,topic2
+hooklet-cli consumer subscribe <id> --topic=<pattern>
+hooklet-cli consumer unsubscribe <id> --topic=<pattern>
+hooklet-cli consumer set-subs <id> --subscriptions=<patterns>
 hooklet-cli consumer regen-token <id>
+```
+
+### Subscription Patterns
+
+Consumers can subscribe to topics using glob patterns:
+
+| Pattern | Matches | Example |
+|---------|---------|---------|
+| `orders.created` | Exact topic | `orders.created` only |
+| `orders.*` | Single level | `orders.created`, `orders.updated` |
+| `orders.**` | All levels | `orders.created`, `orders.eu.created` |
+| `**` | Everything | All topics (admin access) |
+
+```bash
+# Subscribe to all order events
+hooklet-cli consumer subscribe 1 --topic="orders.*"
+
+# Subscribe to everything (admin)
+hooklet-cli consumer subscribe 1 --topic="**"
 ```
 
 ### Remote Administration
@@ -168,8 +189,8 @@ hooklet-cli --host=your-server.com --admin-token=secret123 webhook list
 | `HOOKLET_DB_PATH` | `./hooklet.db` | SQLite database path |
 | `HOOKLET_SOCKET` | `./hooklet.sock` | Unix socket for local CLI |
 | `HOOKLET_ADMIN_TOKEN` | — | Required for remote admin |
-| `HOOKLET_MESSAGE_TTL` | `300000` | How long messages wait in queue (ms) |
-| `HOOKLET_QUEUE_EXPIRY` | `3600000` | How long empty queues survive (ms) |
+| `HOOKLET_MESSAGE_TTL` | `300000` | Message retention in queue (ms, default 5 min) |
+| `HOOKLET_QUEUE_EXPIRY` | `3600000` | Unused queue lifetime (ms, default 1 hour) |
 
 ---
 
