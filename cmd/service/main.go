@@ -225,12 +225,16 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Add actual RabbitMQ health check (ping)
+	rabbitStatus := "disconnected"
+	if s.mq.IsConnected() {
+		rabbitStatus = "connected"
+	}
+
 	status := api.StatusResponse{
 		Status:    "ok",
 		Uptime:    time.Since(s.startedAt).Round(time.Second).String(),
 		StartedAt: s.startedAt,
-		RabbitMQ:  "connected",
+		RabbitMQ:  rabbitStatus,
 	}
 
 	writeJSON(w, status)

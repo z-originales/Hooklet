@@ -3,7 +3,10 @@ package queue
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
+	"github.com/charmbracelet/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -13,11 +16,17 @@ type Config struct {
 	QueueExpiry int // Milliseconds
 }
 
-// Client wraps RabbitMQ connection and channel.
+// Client wraps RabbitMQ connection and channel with automatic reconnection.
 type Client struct {
+	url string
+	cfg Config
+
+	mu      sync.RWMutex
 	conn    *amqp.Connection
 	channel *amqp.Channel
-	cfg     Config
+	closed  bool
+
+	notifyClose chan *amqp.Error
 }
 
 const (
@@ -27,38 +36,123 @@ const (
 
 // NewClient connects to RabbitMQ and returns a ready-to-use client.
 func NewClient(url string, cfg Config) (*Client, error) {
-	conn, err := amqp.Dial(url)
+	c := &Client{
+		url: url,
+		cfg: cfg,
+	}
+
+	if err := c.connect(); err != nil {
+		return nil, err
+	}
+
+	// Start reconnection goroutine
+	go c.handleReconnect()
+
+	return c, nil
+}
+
+// connect establishes connection and channel to RabbitMQ.
+func (c *Client) connect() error {
+	conn, err := amqp.Dial(c.url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
+		return fmt.Errorf("failed to connect to RabbitMQ: %w", err)
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to open channel: %w", err)
+		return fmt.Errorf("failed to open channel: %w", err)
 	}
 
-	// Declare the Topic Exchange immediately
+	// Declare the Topic Exchange
 	err = ch.ExchangeDeclare(
-		ExchangeName, // name
-		ExchangeType, // type
-		true,         // durable
-		false,        // auto-deleted
-		false,        // internal
-		false,        // no-wait
-		nil,          // arguments
+		ExchangeName,
+		ExchangeType,
+		true,  // durable
+		false, // auto-deleted
+		false, // internal
+		false, // no-wait
+		nil,   // arguments
 	)
 	if err != nil {
 		ch.Close()
 		conn.Close()
-		return nil, fmt.Errorf("failed to declare exchange: %w", err)
+		return fmt.Errorf("failed to declare exchange: %w", err)
 	}
 
-	return &Client{conn: conn, channel: ch, cfg: cfg}, nil
+	c.mu.Lock()
+	c.conn = conn
+	c.channel = ch
+	c.notifyClose = make(chan *amqp.Error, 1)
+	c.conn.NotifyClose(c.notifyClose)
+	c.mu.Unlock()
+
+	return nil
+}
+
+// handleReconnect monitors connection and reconnects on failure.
+func (c *Client) handleReconnect() {
+	for {
+		c.mu.RLock()
+		if c.closed {
+			c.mu.RUnlock()
+			return
+		}
+		notifyClose := c.notifyClose
+		c.mu.RUnlock()
+
+		// Wait for connection close notification
+		err := <-notifyClose
+		if err == nil {
+			// Graceful close (client shutdown), exit
+			return
+		}
+
+		log.Warn("RabbitMQ connection lost, reconnecting...", "error", err)
+
+		// Exponential backoff reconnection
+		backoff := time.Second
+		maxBackoff := 30 * time.Second
+
+		for {
+			c.mu.RLock()
+			if c.closed {
+				c.mu.RUnlock()
+				return
+			}
+			c.mu.RUnlock()
+
+			time.Sleep(backoff)
+
+			if err := c.connect(); err != nil {
+				log.Error("Reconnection failed", "error", err, "retry_in", backoff)
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+
+			log.Info("RabbitMQ reconnected successfully")
+			break
+		}
+	}
+}
+
+// IsConnected returns true if the client is connected to RabbitMQ.
+func (c *Client) IsConnected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn != nil && !c.conn.IsClosed()
 }
 
 // Close cleanly shuts down the channel and connection.
 func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.closed = true
+
 	if c.channel != nil {
 		c.channel.Close()
 	}
@@ -70,15 +164,22 @@ func (c *Client) Close() error {
 
 // Publish sends a message to the topic exchange.
 func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
-	// Routing key format: webhook.<topic>
+	c.mu.RLock()
+	ch := c.channel
+	c.mu.RUnlock()
+
+	if ch == nil {
+		return fmt.Errorf("not connected to RabbitMQ")
+	}
+
 	routingKey := fmt.Sprintf("webhook.%s", topic)
 
-	err := c.channel.PublishWithContext(
+	err := ch.PublishWithContext(
 		ctx,
-		ExchangeName, // exchange
-		routingKey,   // routing key
-		false,        // mandatory
-		false,        // immediate
+		ExchangeName,
+		routingKey,
+		false, // mandatory
+		false, // immediate
 		amqp.Publishing{
 			ContentType: "application/json",
 			Body:        body,
@@ -93,7 +194,15 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 
 // Subscribe creates a dedicated queue for the consumer and binds it to the requested topics.
 func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Delivery, error) {
-	// 1. Declare a unique, auto-delete queue for this consumer
+	c.mu.RLock()
+	ch := c.channel
+	c.mu.RUnlock()
+
+	if ch == nil {
+		return nil, fmt.Errorf("not connected to RabbitMQ")
+	}
+
+	// Declare a unique, auto-delete queue for this consumer
 	queueName := fmt.Sprintf("hooklet-ws-%s", consumerID)
 
 	args := amqp.Table{}
@@ -104,44 +213,43 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 		args["x-expires"] = c.cfg.QueueExpiry
 	}
 
-	q, err := c.channel.QueueDeclare(
+	q, err := ch.QueueDeclare(
 		queueName,
-		false, // durable (false = transient, fits WS clients)
-		true,  // delete when unused (true = cleanup on disconnect)
-		true,  // exclusive (true = only this connection can use it)
+		false, // durable
+		true,  // delete when unused
+		true,  // exclusive
 		false, // no-wait
-		args,  // arguments (TTL, Expiry)
+		args,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to declare consumer queue: %w", err)
 	}
 
-	// 2. Bind the queue to the exchange for each topic
+	// Bind the queue to the exchange for each topic
 	for _, topic := range topics {
 		routingKey := fmt.Sprintf("webhook.%s", topic)
-		err := c.channel.QueueBind(
-			q.Name,       // queue name
-			routingKey,   // routing key
-			ExchangeName, // exchange
+		err := ch.QueueBind(
+			q.Name,
+			routingKey,
+			ExchangeName,
 			false,
 			nil,
 		)
 		if err != nil {
-			// Try cleanup
-			c.channel.QueueDelete(queueName, false, false, false)
+			ch.QueueDelete(queueName, false, false, false)
 			return nil, fmt.Errorf("failed to bind topic %s: %w", topic, err)
 		}
 	}
 
-	// 3. Start consuming
-	msgs, err := c.channel.Consume(
+	// Start consuming
+	msgs, err := ch.Consume(
 		q.Name,
 		"",    // consumer tag (auto-generated)
-		false, // auto-ack (false = we ack manually after sending to WS)
+		false, // auto-ack
 		true,  // exclusive
 		false, // no-local
 		false, // no-wait
-		nil,   // arguments
+		nil,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to consume: %w", err)
