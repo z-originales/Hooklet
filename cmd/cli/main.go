@@ -199,8 +199,11 @@ func (c *WebhookDeleteCmd) Run(ctx *Context) error {
 
 // Consumer Commands
 type ConsumerCmd struct {
-	Create ConsumerCreateCmd `cmd:"" help:"Create a new consumer"`
-	List   ConsumerListCmd   `cmd:"" help:"List all consumers"`
+	Create     ConsumerCreateCmd     `cmd:"" help:"Create a new consumer"`
+	List       ConsumerListCmd       `cmd:"" help:"List all consumers"`
+	Delete     ConsumerDeleteCmd     `cmd:"" help:"Delete a consumer"`
+	Update     ConsumerUpdateCmd     `cmd:"" help:"Update consumer subscriptions"`
+	RegenToken ConsumerRegenTokenCmd `cmd:"" help:"Regenerate consumer token"`
 }
 
 type ConsumerCreateCmd struct {
@@ -261,6 +264,80 @@ func (c *ConsumerListCmd) Run(ctx *Context) error {
 	for _, c := range consumers {
 		fmt.Printf("  %d: %s (Subs: %s)\n", c.ID, c.Name, c.Subscriptions)
 	}
+	return nil
+}
+
+type ConsumerDeleteCmd struct {
+	ID int64 `arg:"" help:"ID of the consumer to delete"`
+}
+
+func (c *ConsumerDeleteCmd) Run(ctx *Context) error {
+	path := fmt.Sprintf("/admin/consumers/%d", c.ID)
+	resp, err := ctx.adminRequest(http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed: %s", body)
+	}
+
+	fmt.Printf("Consumer %d deleted\n", c.ID)
+	return nil
+}
+
+type ConsumerUpdateCmd struct {
+	ID            int64  `arg:"" help:"ID of the consumer to update"`
+	Subscriptions string `help:"New comma-separated list of subscribed topics (or *)" required:""`
+}
+
+func (c *ConsumerUpdateCmd) Run(ctx *Context) error {
+	path := fmt.Sprintf("/admin/consumers/%d", c.ID)
+	req := map[string]string{"subscriptions": c.Subscriptions}
+	resp, err := ctx.adminRequest(http.MethodPatch, path, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed: %s", body)
+	}
+
+	fmt.Printf("Consumer %d subscriptions updated to: %s\n", c.ID, c.Subscriptions)
+	return nil
+}
+
+type ConsumerRegenTokenCmd struct {
+	ID int64 `arg:"" help:"ID of the consumer"`
+}
+
+func (c *ConsumerRegenTokenCmd) Run(ctx *Context) error {
+	path := fmt.Sprintf("/admin/consumers/%d", c.ID)
+	req := map[string]bool{"regenerate_token": true}
+	resp, err := ctx.adminRequest(http.MethodPatch, path, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed: %s", body)
+	}
+
+	var res struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return err
+	}
+
+	fmt.Printf("New token: %s\n", res.Token)
+	fmt.Println("SAVE THIS TOKEN! It will not be shown again.")
 	return nil
 }
 

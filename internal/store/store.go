@@ -251,3 +251,45 @@ func (s *Store) GetConsumerByTokenHash(hash string) (*Consumer, error) {
 	c.TokenHash = hash
 	return &c, nil
 }
+
+// DeleteConsumer removes a consumer by ID.
+func (s *Store) DeleteConsumer(id int64) error {
+	query := `DELETE FROM consumers WHERE id = ?`
+	res, err := s.db.Exec(query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete consumer: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("consumer not found")
+	}
+	return nil
+}
+
+// UpdateConsumerSubscriptions updates a consumer's subscriptions.
+func (s *Store) UpdateConsumerSubscriptions(id int64, subscriptions string) error {
+	query := `UPDATE consumers SET subscriptions = ? WHERE id = ?`
+	res, err := s.db.Exec(query, subscriptions, id)
+	if err != nil {
+		return fmt.Errorf("failed to update consumer: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("consumer not found")
+	}
+	return nil
+}
+
+// RegenerateConsumerToken updates a consumer's token hash.
+func (s *Store) RegenerateConsumerToken(id int64, newTokenHash string) error {
+	query := `UPDATE consumers SET token_hash = ? WHERE id = ?`
+	res, err := s.db.Exec(query, newTokenHash, id)
+	if err != nil {
+		return fmt.Errorf("failed to regenerate token: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("consumer not found")
+	}
+	return nil
+}

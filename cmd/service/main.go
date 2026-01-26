@@ -89,6 +89,7 @@ func main() {
 	mux.HandleFunc("/admin/webhooks", srv.handleAdminWebhooks)
 	mux.HandleFunc("/admin/webhooks/", srv.handleAdminWebhookDelete) // for delete
 	mux.HandleFunc("/admin/consumers", srv.handleAdminConsumers)
+	mux.HandleFunc("/admin/consumers/", srv.handleAdminConsumerByID) // for delete/update
 
 	// Webhook ingestion (external services POST here)
 	mux.HandleFunc(api.RoutePublish, srv.handleWebhook)
@@ -156,6 +157,7 @@ func main() {
 	adminMux.HandleFunc("/admin/webhooks", srv.handleAdminWebhooks)
 	adminMux.HandleFunc("/admin/webhooks/", srv.handleAdminWebhookDelete)
 	adminMux.HandleFunc("/admin/consumers", srv.handleAdminConsumers)
+	adminMux.HandleFunc("/admin/consumers/", srv.handleAdminConsumerByID)
 
 	// Run servers in goroutines
 	var wg sync.WaitGroup
@@ -401,6 +403,82 @@ func (s *server) handleAdminConsumers(w http.ResponseWriter, r *http.Request) {
 			Token:    token,
 		}
 		writeJSON(w, resp)
+
+	default:
+		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAdminConsumerByID handles DELETE and PATCH for /admin/consumers/{id}
+func (s *server) handleAdminConsumerByID(w http.ResponseWriter, r *http.Request) {
+	if !s.checkAdminAuth(w, r) {
+		return
+	}
+
+	idStr := strings.TrimPrefix(r.URL.Path, "/admin/consumers/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, "Invalid ID", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodDelete:
+		if err := s.db.DeleteConsumer(id); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				writeError(w, "Consumer not found", http.StatusNotFound)
+				return
+			}
+			log.Error("Failed to delete consumer", "error", err)
+			writeError(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	case http.MethodPatch:
+		var req struct {
+			Subscriptions   *string `json:"subscriptions,omitempty"`
+			RegenerateToken bool    `json:"regenerate_token,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.Subscriptions != nil {
+			if err := s.db.UpdateConsumerSubscriptions(id, *req.Subscriptions); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					writeError(w, "Consumer not found", http.StatusNotFound)
+					return
+				}
+				log.Error("Failed to update consumer", "error", err)
+				writeError(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if req.RegenerateToken {
+			newToken, err := generateSecureToken()
+			if err != nil {
+				log.Error("Failed to generate token", "error", err)
+				writeError(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			newHash := store.HashString(newToken)
+			if err := s.db.RegenerateConsumerToken(id, newHash); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					writeError(w, "Consumer not found", http.StatusNotFound)
+					return
+				}
+				log.Error("Failed to regenerate token", "error", err)
+				writeError(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]string{"token": newToken})
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
