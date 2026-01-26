@@ -199,16 +199,18 @@ func (c *WebhookDeleteCmd) Run(ctx *Context) error {
 
 // Consumer Commands
 type ConsumerCmd struct {
-	Create     ConsumerCreateCmd     `cmd:"" help:"Create a new consumer"`
-	List       ConsumerListCmd       `cmd:"" help:"List all consumers"`
-	Delete     ConsumerDeleteCmd     `cmd:"" help:"Delete a consumer"`
-	Update     ConsumerUpdateCmd     `cmd:"" help:"Update consumer subscriptions"`
-	RegenToken ConsumerRegenTokenCmd `cmd:"" help:"Regenerate consumer token"`
+	Create      ConsumerCreateCmd      `cmd:"" help:"Create a new consumer"`
+	List        ConsumerListCmd        `cmd:"" help:"List all consumers"`
+	Delete      ConsumerDeleteCmd      `cmd:"" help:"Delete a consumer"`
+	Subscribe   ConsumerSubscribeCmd   `cmd:"" help:"Add a topic subscription to a consumer"`
+	Unsubscribe ConsumerUnsubscribeCmd `cmd:"" help:"Remove a topic subscription from a consumer"`
+	SetSubs     ConsumerSetSubsCmd     `cmd:"" help:"Replace all subscriptions for a consumer"`
+	RegenToken  ConsumerRegenTokenCmd  `cmd:"" help:"Regenerate consumer token"`
 }
 
 type ConsumerCreateCmd struct {
 	Name          string `arg:"" help:"Name of the consumer"`
-	Subscriptions string `help:"Comma separated list of subscribed topics (or *)" default:""`
+	Subscriptions string `help:"Comma-separated list of topic subscriptions (use '**' for all topics)" default:""`
 }
 
 func (c *ConsumerCreateCmd) Run(ctx *Context) error {
@@ -262,8 +264,11 @@ func (c *ConsumerListCmd) Run(ctx *Context) error {
 
 	fmt.Println("Consumers:")
 	for _, c := range consumers {
-		fmt.Printf("  %d: %s (Subs: %s)\n", c.ID, c.Name, c.Subscriptions)
+		fmt.Printf("  [%d] %s\n", c.ID, c.Name)
+		fmt.Printf("      Created: %s\n", c.CreatedAt.Format(time.RFC3339))
 	}
+	fmt.Println("\nUse 'hooklet consumer subscribe <id> --topic <pattern>' to add subscriptions.")
+	fmt.Println("Tip: Use '**' pattern to subscribe to all topics.")
 	return nil
 }
 
@@ -288,12 +293,64 @@ func (c *ConsumerDeleteCmd) Run(ctx *Context) error {
 	return nil
 }
 
-type ConsumerUpdateCmd struct {
-	ID            int64  `arg:"" help:"ID of the consumer to update"`
-	Subscriptions string `help:"New comma-separated list of subscribed topics (or *)" required:""`
+// ConsumerSubscribeCmd adds a single topic subscription to a consumer.
+type ConsumerSubscribeCmd struct {
+	ID    int64  `arg:"" help:"ID of the consumer"`
+	Topic string `help:"Topic pattern to subscribe to (e.g., 'orders.*', '**' for all)" required:""`
 }
 
-func (c *ConsumerUpdateCmd) Run(ctx *Context) error {
+func (c *ConsumerSubscribeCmd) Run(ctx *Context) error {
+	path := fmt.Sprintf("/admin/consumers/%d/subscribe", c.ID)
+	req := map[string]string{"topic": c.Topic}
+	resp, err := ctx.adminRequest(http.MethodPost, path, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed: %s", body)
+	}
+
+	fmt.Printf("Consumer %d subscribed to: %s\n", c.ID, c.Topic)
+	if c.Topic == "**" {
+		fmt.Println("This consumer now has access to ALL topics.")
+	}
+	return nil
+}
+
+// ConsumerUnsubscribeCmd removes a topic subscription from a consumer.
+type ConsumerUnsubscribeCmd struct {
+	ID    int64  `arg:"" help:"ID of the consumer"`
+	Topic string `help:"Topic pattern to unsubscribe from" required:""`
+}
+
+func (c *ConsumerUnsubscribeCmd) Run(ctx *Context) error {
+	path := fmt.Sprintf("/admin/consumers/%d/unsubscribe", c.ID)
+	req := map[string]string{"topic": c.Topic}
+	resp, err := ctx.adminRequest(http.MethodPost, path, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed: %s", body)
+	}
+
+	fmt.Printf("Consumer %d unsubscribed from: %s\n", c.ID, c.Topic)
+	return nil
+}
+
+// ConsumerSetSubsCmd replaces all subscriptions for a consumer.
+type ConsumerSetSubsCmd struct {
+	ID            int64  `arg:"" help:"ID of the consumer"`
+	Subscriptions string `help:"Comma-separated list of topic patterns (use '**' for all topics)" required:""`
+}
+
+func (c *ConsumerSetSubsCmd) Run(ctx *Context) error {
 	path := fmt.Sprintf("/admin/consumers/%d", c.ID)
 	req := map[string]string{"subscriptions": c.Subscriptions}
 	resp, err := ctx.adminRequest(http.MethodPatch, path, req)
@@ -307,7 +364,10 @@ func (c *ConsumerUpdateCmd) Run(ctx *Context) error {
 		return fmt.Errorf("failed: %s", body)
 	}
 
-	fmt.Printf("Consumer %d subscriptions updated to: %s\n", c.ID, c.Subscriptions)
+	fmt.Printf("Consumer %d subscriptions set to: %s\n", c.ID, c.Subscriptions)
+	if c.Subscriptions == "**" {
+		fmt.Println("This consumer now has access to ALL topics.")
+	}
 	return nil
 }
 
