@@ -163,6 +163,7 @@ func (c *Client) Close() error {
 }
 
 // Publish sends a message to the topic exchange.
+// Messages are persistent and will survive RabbitMQ restarts (until TTL expires).
 func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 	c.mu.RLock()
 	ch := c.channel
@@ -181,8 +182,9 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 		false, // mandatory
 		false, // immediate
 		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
 		},
 	)
 	if err != nil {
@@ -193,6 +195,8 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 }
 
 // Subscribe creates a dedicated queue for the consumer and binds it to the requested topics.
+// Queues are durable and will survive RabbitMQ restarts, allowing consumers to
+// reconnect and retrieve messages that arrived while they were offline (within TTL).
 func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Delivery, error) {
 	c.mu.RLock()
 	ch := c.channel
@@ -202,7 +206,8 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 		return nil, fmt.Errorf("not connected to RabbitMQ")
 	}
 
-	// Declare a unique, auto-delete queue for this consumer
+	// Declare a durable queue for this consumer
+	// The queue persists across RabbitMQ restarts and consumer reconnections
 	queueName := fmt.Sprintf("hooklet-ws-%s", consumerID)
 
 	args := amqp.Table{}
@@ -215,9 +220,9 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 
 	q, err := ch.QueueDeclare(
 		queueName,
-		false, // durable
-		true,  // delete when unused
-		true,  // exclusive
+		true,  // durable: queue survives broker restart
+		false, // delete when unused: keep queue for reconnecting consumers
+		false, // exclusive: allow reconnections from same consumer
 		false, // no-wait
 		args,
 	)
@@ -245,8 +250,8 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 	msgs, err := ch.Consume(
 		q.Name,
 		"",    // consumer tag (auto-generated)
-		false, // auto-ack
-		true,  // exclusive
+		false, // auto-ack: require explicit acknowledgement
+		false, // exclusive: allow multiple consumers (for reconnection)
 		false, // no-local
 		false, // no-wait
 		nil,
