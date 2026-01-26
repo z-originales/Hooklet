@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -371,15 +373,13 @@ func (s *server) handleAdminConsumers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Simple token generation (UUID would be better, using timestamp + random for now if UUID package not available)
-		// Or since we have modernc.org/sqlite, we likely don't have google/uuid imported yet unless I check go.mod
-		// Checking go.mod earlier showed google/uuid indirectly. I'll just use a simple pseudo-random string for now to avoid deps issues.
-		token := fmt.Sprintf("%s-%d", req.Name, time.Now().UnixNano())
-
-		// In a real app we'd hash this. For this POC storing raw or simple hash is 'ok' but let's pretend we hash it.
-		// Actually storing raw token in DB is bad practice, but useful for retrieving it if we want to show it once.
-		// Let's return it in response but store a "hash" (simulate).
-		// For simplicity in this iteration: store the token as is in token_hash column, but treat it as a secret.
+		// Generate cryptographically secure token
+		token, err := generateSecureToken()
+		if err != nil {
+			log.Error("Failed to generate token", "error", err)
+			writeError(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 
 		consumer, err := s.db.CreateConsumer(req.Name, token, req.Subscriptions)
 		if err != nil {
@@ -666,4 +666,14 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// generateSecureToken returns a cryptographically secure random token.
+// Returns 32 random bytes encoded as 64 hex characters.
+func generateSecureToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("failed to generate token: %w", err)
+	}
+	return hex.EncodeToString(bytes), nil
 }
