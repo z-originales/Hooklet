@@ -45,8 +45,17 @@ const ctxKeyAdminBypass contextKey = "admin_bypass"
 
 func main() {
 	port := getEnv("PORT", api.DefaultPort)
-	rabbitURL := getEnv("RABBITMQ_URL", api.DefaultRabbitURL)
 	dbPath := getEnv("HOOKLET_DB_PATH", "hooklet.db")
+
+	// Build RabbitMQ URL from components (or use full URL if provided)
+	rabbitURL := os.Getenv("RABBITMQ_URL")
+	if rabbitURL == "" {
+		rabbitHost := getEnv("RABBITMQ_HOST", api.DefaultRabbitHost)
+		rabbitPort := getEnv("RABBITMQ_PORT", api.DefaultRabbitPort)
+		rabbitUser := getEnv("RABBITMQ_USER", api.DefaultRabbitUser)
+		rabbitPass := getEnv("RABBITMQ_PASS", api.DefaultRabbitPass)
+		rabbitURL = fmt.Sprintf("amqp://%s:%s@%s:%s/", rabbitUser, rabbitPass, rabbitHost, rabbitPort)
+	}
 
 	// Configure queue settings
 	msgTTL, _ := strconv.Atoi(getEnv("HOOKLET_MESSAGE_TTL", strconv.Itoa(api.DefaultMessageTTL)))
