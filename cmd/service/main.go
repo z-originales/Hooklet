@@ -10,9 +10,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"hooklet/internal/api"
@@ -60,7 +62,6 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to connect to RabbitMQ", "error", err)
 	}
-	defer mqClient.Close()
 	log.Info("Connected to RabbitMQ")
 
 	// Connect to SQLite
@@ -68,7 +69,6 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to connect to SQLite", "error", err)
 	}
-	defer db.Close()
 	log.Info("Connected to SQLite", "path", dbPath)
 
 	srv := &server{
@@ -125,13 +125,6 @@ func main() {
 		log.Warn("Unix socket listener failed (admin socket disabled)", "error", err)
 	} else {
 		log.Info("Listening on Unix Socket", "path", socketPath)
-		// Cleanup socket on exit
-		// Note: defer runs when main returns, but ListenAndServe blocks.
-		// We'll rely on OS cleanup or start-up cleanup for now.
-		defer func() {
-			unixListener.Close()
-			os.Remove(socketPath)
-		}()
 	}
 
 	// Create request multiplexers
@@ -159,43 +152,69 @@ func main() {
 	adminMux.HandleFunc("/admin/consumers", srv.handleAdminConsumers)
 	adminMux.HandleFunc("/admin/consumers/", srv.handleAdminConsumerByID)
 
-	// Run servers in goroutines
-	var wg sync.WaitGroup
-	wg.Add(1)
+	// Trusted handler for Unix socket (injects admin bypass context)
+	trustedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), ctxKeyAdminBypass, true)
+		adminMux.ServeHTTP(w, r.WithContext(ctx))
+	})
 
-	// 1. TCP Server (Public)
+	// Create HTTP servers
+	tcpServer := &http.Server{Handler: middlewareSource("api", publicMux)}
+	unixServer := &http.Server{Handler: middlewareSource("unix", trustedHandler)}
+
+	// Listen for shutdown signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start TCP server
 	go func() {
-		defer wg.Done()
-		if err := http.Serve(tcpListener, middlewareSource("api", publicMux)); err != nil {
+		if err := tcpServer.Serve(tcpListener); err != http.ErrServerClosed {
 			log.Error("TCP Server failed", "error", err)
 		}
 	}()
 
-	// 2. Unix Socket Server (Admin)
+	// Start Unix socket server
 	if unixListener != nil {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			// 2. Unix Socket Server (Admin)
-			// This handler wraps the admin routes and marks the request as "trusted"
-			// by injecting the ctxKeyAdminBypass into the context.
-			// Since this listener only accepts connections from the local Unix socket
-			// (which is protected by file system permissions), we consider these requests
-			// to be from an authorized local administrator.
-			trustedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Inject trust flag into context
-				ctx := context.WithValue(r.Context(), ctxKeyAdminBypass, true)
-				adminMux.ServeHTTP(w, r.WithContext(ctx))
-			})
-
-			if err := http.Serve(unixListener, middlewareSource("unix", trustedHandler)); err != nil {
+			if err := unixServer.Serve(unixListener); err != http.ErrServerClosed {
 				log.Error("Unix Socket Server failed", "error", err)
 			}
 		}()
 	}
 
-	// Wait (indefinitely)
-	wg.Wait()
+	log.Info("Service ready")
+
+	// Wait for shutdown signal
+	sig := <-sigChan
+	log.Info("Received shutdown signal", "signal", sig)
+
+	// Graceful shutdown with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	// Shutdown HTTP servers
+	log.Info("Shutting down TCP server...")
+	if err := tcpServer.Shutdown(shutdownCtx); err != nil {
+		log.Error("TCP server shutdown error", "error", err)
+	}
+
+	if unixListener != nil {
+		log.Info("Shutting down Unix socket server...")
+		if err := unixServer.Shutdown(shutdownCtx); err != nil {
+			log.Error("Unix server shutdown error", "error", err)
+		}
+		os.Remove(socketPath)
+	}
+
+	// Close RabbitMQ
+	log.Info("Closing RabbitMQ connection...")
+	mqClient.Close()
+
+	// Close SQLite
+	log.Info("Closing database...")
+	db.Close()
+
+	log.Info("Shutdown complete")
 }
 
 // handleStatus returns service health information.
