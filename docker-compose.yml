@@ -1,13 +1,12 @@
 services:
   rabbitmq:
-    image: rabbitmq:3-management
+    image: rabbitmq:3-alpine
     container_name: hooklet-rabbitmq
     ports:
-      - "127.0.0.1:5672:5672"   # AMQP protocol port
-      - "127.0.0.1:15672:15672" # Management UI port optionnal
+      - "127.0.0.1:5672:5672"
     environment:
-      RABBITMQ_DEFAULT_USER: changeme
-      RABBITMQ_DEFAULT_PASS: changeme
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
