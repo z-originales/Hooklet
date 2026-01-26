@@ -1,296 +1,179 @@
-# Hooklet
+# 🪝 Hooklet
 
-A lightweight, secure webhook relay that lets you receive webhooks on a public server and stream them to your private applications via WebSocket.
-
-## The Problem
-
-Receiving webhooks locally or on internal services requires either:
-- Exposing your machine's port to the internet (risky)
-- Complex tunneling solutions like ngrok (dependencies, cost)
-
-## The Solution
-
-**Deport your webhook endpoint.** Host Hooklet on a small VPS. It accepts incoming webhooks and streams them in real-time to your applications via outbound WebSocket connections. No inbound ports needed on your private infrastructure.
+> Lightweight webhook relay — receive webhooks on a VPS, stream them to your apps via WebSocket.
 
 ```
-[Stripe/GitHub/etc] --POST--> [Hooklet on VPS] --WebSocket--> [Your App behind NAT]
+[Stripe/GitHub/etc] ──POST──▶ [Hooklet on VPS] ══WebSocket══▶ [Your App behind NAT]
 ```
 
-## Features
+No inbound ports needed. No ngrok. Just outbound WebSocket connections.
 
-- **Real-Time Streaming**: Instant delivery via WebSocket
-- **Multi-Topic Subscriptions**: Listen to multiple webhooks on one connection
-- **Reliable Delivery**: Built on RabbitMQ with message persistence
-- **Simple Administration**: CLI tool for managing webhooks and consumers
+---
 
-## Quick Start
+## ✨ Features
+
+- **⚡ Real-Time** — Instant delivery via WebSocket
+- **📡 Multi-Topic** — Subscribe to multiple webhooks on one connection  
+- **🔒 Secure by Default** — Token auth, hashed URLs, strict topic registration
+- **🐰 Reliable** — Built on RabbitMQ with message persistence
+- **🪶 Lightweight** — Single binary, SQLite storage, minimal dependencies
+
+---
+
+## 🚀 Quick Start
 
 ### Prerequisites
 
-- Go 1.21+
-- RabbitMQ (via Docker or installed)
+- Go 1.24+
+- Docker (for RabbitMQ)
 
-### 1. Start RabbitMQ
+### 1. Start Infrastructure
 
 ```bash
 docker-compose up -d
 ```
 
-### 2. Build & Run the Service
+### 2. Build & Run
 
 ```bash
-# Build
-go build -o hooklet-service ./cmd/service
+go build -o hooklet ./cmd/service
 go build -o hooklet-cli ./cmd/cli
 
-# Run
-./hooklet-service
+./hooklet
 ```
 
-### 3. Create a Webhook (Admin)
+### 3. Create a Webhook
 
 ```bash
 ./hooklet-cli webhook create stripe-payments
 ```
-
-Output:
 ```
-Webhook created!
-  Name:      stripe-payments
-  ID:        1
-  Topic URL: /webhook/a1b2c3d4e5f6...
-
-Use the Topic URL to publish webhooks. The hash prevents topic enumeration.
+✓ Webhook created: stripe-payments
+  URL: /webhook/a1b2c3d4e5f6...
 ```
 
-### 4. Create a Consumer (Admin)
+### 4. Create a Consumer
 
 ```bash
-./hooklet-cli consumer create my-backend --subscriptions=stripe-payments
+./hooklet-cli consumer create my-app --subscriptions=stripe-payments
+```
+```
+✓ Consumer created: my-app
+  Token: my-app-1737012345678
+  ⚠️  Save this token! It won't be shown again.
 ```
 
-Output:
-```
-Consumer created: my-backend (ID: 1)
-Token: my-backend-1737012345678
-SAVE THIS TOKEN! It will not be shown again.
-```
-
-### 5. Configure Your Webhook Provider
-
-Point Stripe (or any service) to:
-```
-https://your-server.com/webhook/a1b2c3d4e5f6...
-```
-
-### 6. Connect Your Application
-
-Your app connects via WebSocket and authenticates:
+### 5. Connect & Listen
 
 ```
-1. Connect:  ws://your-server.com/ws?topics=stripe-payments
-2. Send:     {"type":"auth","token":"my-backend-1737012345678"}
-3. Receive:  {"type":"auth_ok","consumer":"my-backend"}
-4. Stream:   ... webhook payloads arrive here ...
+Connect:  ws://localhost:8080/ws?topics=stripe-payments
+Send:     {"type":"auth","token":"my-app-1737012345678"}
+Receive:  {"type":"auth_ok","consumer":"my-app"}
+Stream:   ... webhooks arrive here ...
 ```
 
 ---
 
-## Client Examples
+## 📖 Client Examples
 
-### Go
+<details>
+<summary><b>Go</b></summary>
 
 ```go
-package main
+conn, _, _ := websocket.Dial(ctx, "ws://localhost:8080/ws?topics=stripe-payments", nil)
+defer conn.Close(websocket.StatusNormalClosure, "")
 
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"log"
+// Auth via message (not URL — prevents log leakage)
+conn.Write(ctx, websocket.MessageText, []byte(`{"type":"auth","token":"my-app-xxx"}`))
 
-	"github.com/coder/websocket"
-)
-
-func main() {
-	ctx := context.Background()
-
-	// Connect to Hooklet
-	conn, _, err := websocket.Dial(ctx, "ws://localhost:8080/ws?topics=stripe-payments", nil)
-	if err != nil {
-		log.Fatal("Connection failed:", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Authenticate (token in message body, not URL - prevents log leakage)
-	auth := map[string]string{"type": "auth", "token": "my-backend-1737012345678"}
-	authBytes, _ := json.Marshal(auth)
-	if err := conn.Write(ctx, websocket.MessageText, authBytes); err != nil {
-		log.Fatal("Auth failed:", err)
-	}
-
-	// Wait for auth confirmation
-	_, resp, _ := conn.Read(ctx)
-	fmt.Printf("Auth response: %s\n", resp)
-
-	// Listen for webhooks
-	fmt.Println("Listening for webhooks...")
-	for {
-		_, message, err := conn.Read(ctx)
-		if err != nil {
-			log.Println("Connection closed:", err)
-			return
-		}
-		fmt.Printf("Webhook received: %s\n", message)
-	}
+for {
+    _, msg, _ := conn.Read(ctx)
+    fmt.Printf("Webhook: %s\n", msg)
 }
 ```
+</details>
 
-### Python
+<details>
+<summary><b>Python</b></summary>
 
 ```python
-import asyncio
-import json
-import websockets
-
-async def listen():
-    uri = "ws://localhost:8080/ws?topics=stripe-payments"
-    
-    async with websockets.connect(uri) as ws:
-        # Authenticate
-        await ws.send(json.dumps({
-            "type": "auth",
-            "token": "my-backend-1737012345678"
-        }))
-        
-        # Wait for confirmation
-        response = await ws.recv()
-        print(f"Auth: {response}")
-        
-        # Listen for webhooks
-        print("Listening for webhooks...")
-        while True:
-            message = await ws.recv()
-            data = json.loads(message)
-            print(f"Webhook received: {data}")
-
-if __name__ == "__main__":
-    asyncio.run(listen())
+async with websockets.connect("ws://localhost:8080/ws?topics=stripe-payments") as ws:
+    await ws.send(json.dumps({"type": "auth", "token": "my-app-xxx"}))
+    async for message in ws:
+        print(f"Webhook: {message}")
 ```
+</details>
 
-### Rust
-
-```rust
-use futures_util::{SinkExt, StreamExt};
-use serde_json::json;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-
-#[tokio::main]
-async fn main() {
-    let url = "ws://localhost:8080/ws?topics=stripe-payments";
-    
-    let (mut ws, _) = connect_async(url).await.expect("Failed to connect");
-    println!("Connected");
-
-    // Authenticate
-    let auth = json!({"type": "auth", "token": "my-backend-1737012345678"});
-    ws.send(Message::Text(auth.to_string())).await.unwrap();
-
-    // Wait for confirmation
-    if let Some(Ok(Message::Text(resp))) = ws.next().await {
-        println!("Auth: {}", resp);
-    }
-
-    // Listen for webhooks
-    println!("Listening for webhooks...");
-    while let Some(Ok(msg)) = ws.next().await {
-        if let Message::Text(text) = msg {
-            println!("Webhook received: {}", text);
-        }
-    }
-}
-```
-
-### Node.js
+<details>
+<summary><b>Node.js</b></summary>
 
 ```javascript
-const WebSocket = require('ws');
-
 const ws = new WebSocket('ws://localhost:8080/ws?topics=stripe-payments');
-
-ws.on('open', () => {
-    // Authenticate
-    ws.send(JSON.stringify({
-        type: 'auth',
-        token: 'my-backend-1737012345678'
-    }));
-});
-
-ws.on('message', (data) => {
-    const msg = JSON.parse(data);
-    
-    if (msg.type === 'auth_ok') {
-        console.log(`Authenticated as: ${msg.consumer}`);
-        console.log('Listening for webhooks...');
-    } else {
-        console.log('Webhook received:', msg);
-    }
-});
-
-ws.on('close', () => console.log('Disconnected'));
-ws.on('error', (err) => console.error('Error:', err));
+ws.on('open', () => ws.send(JSON.stringify({type: 'auth', token: 'my-app-xxx'})));
+ws.on('message', (data) => console.log('Webhook:', JSON.parse(data)));
 ```
+</details>
+
+<details>
+<summary><b>Rust</b></summary>
+
+```rust
+let (mut ws, _) = connect_async("ws://localhost:8080/ws?topics=stripe-payments").await?;
+ws.send(Message::Text(r#"{"type":"auth","token":"my-app-xxx"}"#.into())).await?;
+while let Some(Ok(Message::Text(msg))) = ws.next().await {
+    println!("Webhook: {}", msg);
+}
+```
+</details>
 
 ---
 
-## CLI Commands
-
-The CLI is for **administration only**.
+## 🛠️ CLI Reference
 
 ```bash
-# Check service status
-./hooklet-cli status
+# Service health
+hooklet-cli status
 
-# Webhook management
-./hooklet-cli webhook create <name>
-./hooklet-cli webhook list
-./hooklet-cli webhook delete <id>
+# Webhooks
+hooklet-cli webhook create <name>
+hooklet-cli webhook list
+hooklet-cli webhook delete <id>
 
-# Consumer management  
-./hooklet-cli consumer create <name> [--subscriptions=topic1,topic2]
-./hooklet-cli consumer list
+# Consumers
+hooklet-cli consumer create <name> [--subscriptions=topic1,topic2]
+hooklet-cli consumer list
+hooklet-cli consumer delete <id>
+hooklet-cli consumer update <id> --subscriptions=topic1,topic2
+hooklet-cli consumer regen-token <id>
 ```
 
 ### Remote Administration
 
-By default, the CLI connects via Unix socket (local only). For remote admin:
-
 ```bash
-# Set admin token on service
+# On the server
 export HOOKLET_ADMIN_TOKEN=secret123
 
-# Use from remote machine
-./hooklet-cli --host=your-server.com --admin-token=secret123 webhook list
+# From your machine
+hooklet-cli --host=your-server.com --admin-token=secret123 webhook list
 ```
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP server port |
 | `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
 | `HOOKLET_DB_PATH` | `./hooklet.db` | SQLite database path |
-| `HOOKLET_SOCKET` | `./hooklet.sock` | Unix socket for local admin |
-| `HOOKLET_ADMIN_TOKEN` | *(none)* | Required for remote administration |
-| `HOOKLET_MESSAGE_TTL` | `300000` | Message TTL in queue (ms) |
-| `HOOKLET_QUEUE_EXPIRY` | `3600000` | Unused queue expiry (ms) |
-
+| `HOOKLET_SOCKET` | `./hooklet.sock` | Unix socket for local CLI |
+| `HOOKLET_ADMIN_TOKEN` | — | Required for remote admin |
+| `HOOKLET_MESSAGE_TTL` | `300000` | How long messages wait in queue (ms) |
+| `HOOKLET_QUEUE_EXPIRY` | `3600000` | How long empty queues survive (ms) |
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 ```mermaid
 flowchart LR
@@ -298,13 +181,13 @@ flowchart LR
         Stripe[Stripe / GitHub / etc.]
     end
 
-    subgraph VPS["Public VPS"]
+    subgraph VPS["☁️ Public VPS"]
         Hooklet[Hooklet Service]
         RabbitMQ[(RabbitMQ)]
         SQLite[(SQLite)]
     end
 
-    subgraph Private["Private Network"]
+    subgraph Private["🏠 Private Network"]
         App1[Your App 1]
         App2[Your App 2]
     end
@@ -316,49 +199,12 @@ flowchart LR
     Hooklet <-.->|WebSocket| App2
 ```
 
-### Authentication Flow
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Hooklet
-    participant DB as SQLite
-
-    Client->>Hooklet: Connect WS /ws?topics=stripe
-    Hooklet-->>Client: Connection accepted
-    Client->>Hooklet: {"type":"auth","token":"..."}
-    Hooklet->>DB: Validate token (SHA256)
-    DB-->>Hooklet: Consumer + permissions
-    alt Token valid & authorized
-        Hooklet-->>Client: {"type":"auth_ok","consumer":"..."}
-        loop Messages
-            Hooklet-->>Client: Webhook payload
-        end
-    else Invalid or unauthorized
-        Hooklet-->>Client: Close connection
-    end
-```
-
-### Webhook Ingestion Flow
-
-```mermaid
-sequenceDiagram
-    participant External as External Service
-    participant Hooklet
-    participant DB as SQLite
-    participant MQ as RabbitMQ
-
-    External->>Hooklet: POST /webhook/<hash>
-    Hooklet->>DB: Lookup webhook by hash
-    alt Webhook exists
-        DB-->>Hooklet: Webhook found
-        Hooklet->>MQ: Publish to exchange
-        MQ-->>Hooklet: ACK
-        Hooklet-->>External: 202 Accepted
-    else Unknown hash
-        DB-->>Hooklet: Not found
-        Hooklet-->>External: 404 Not Found
-    end
-```
-
 ---
+
+## 🔒 Security
+
+- **Hashed webhook URLs** — `/webhook/a1b2c3...` makes topic enumeration more difficult
+- **Token-based auth** — Consumers authenticate via message, not URL (no log leakage)
+- **Stored hashed** — Tokens stored as SHA256, never in plaintext
+- **Strict registration** — Only pre-registered webhooks accept data (404 otherwise)
+- **Unix socket admin** — Local CLI has implicit trust, remote requires token
