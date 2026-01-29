@@ -12,25 +12,12 @@ const (
 	RouteSubscribe = "/ws/" // + {topic}
 )
 
-// Default configuration
+// Default configuration constants have been moved to internal/config
+// Constants below are kept for backward compatibility with CLI if it imports them,
+// but should eventually be removed or migrated.
 const (
 	DefaultPort       = "8080"
-	DefaultHost       = "localhost"
-	DefaultRabbitHost = "localhost"
-	DefaultRabbitPort = "5672"
-	DefaultRabbitUser = "guest"
-	DefaultRabbitPass = "guest"
 	DefaultSocketPath = "./hooklet.sock"
-
-	// DefaultMessageTTL is how long messages stay in a queue before expiring (milliseconds).
-	// If a consumer doesn't read a message within this time, it's discarded.
-	// Override with HOOKLET_MESSAGE_TTL environment variable.
-	DefaultMessageTTL = 300000 // 5 minutes
-
-	// DefaultQueueExpiry is how long an unused queue persists before auto-deletion (milliseconds).
-	// If no consumer connects to a queue within this time, RabbitMQ deletes it.
-	// Override with HOOKLET_QUEUE_EXPIRY environment variable.
-	DefaultQueueExpiry = 3600000 // 1 hour
 )
 
 // StatusResponse is returned by the status endpoint.
