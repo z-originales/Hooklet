@@ -641,6 +641,21 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify producer authentication if webhook has a token configured
+	if wh.HasToken && wh.TokenHash != nil {
+		token := r.Header.Get(api.HeaderAuthToken)
+		if token == "" {
+			log.Warn("Missing auth token for protected webhook", "topic_hash", topicHash, "webhook", wh.Name)
+			writeError(w, "Authentication required", http.StatusUnauthorized)
+			return
+		}
+		if store.HashString(token) != *wh.TokenHash {
+			log.Warn("Invalid auth token for webhook", "topic_hash", topicHash, "webhook", wh.Name)
+			writeError(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	// Read body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
