@@ -1,23 +1,15 @@
-// Package api defines shared types and constants between service and CLI.
-package api
+// Package httpcontract defines shared types and constants between service and CLI.
+package httpcontract
 
 import "time"
 
 // API route constants
 const (
 	// Service endpoints
-	RouteStatus    = "/api/status"
+	RouteStatus    = "/httpcontract/status"
 	RoutePublish   = "/webhook/" // + {topic}
-	RouteTopics    = "/api/topics"
+	RouteTopics    = "/httpcontract/topics"
 	RouteSubscribe = "/ws/" // + {topic}
-)
-
-// Default configuration constants have been moved to internal/config
-// Constants below are kept for backward compatibility with CLI if it imports them,
-// but should eventually be removed or migrated.
-const (
-	DefaultPort       = "8080"
-	DefaultSocketPath = "./hooklet.sock"
 )
 
 // StatusResponse is returned by the status endpoint.
@@ -31,12 +23,6 @@ type StatusResponse struct {
 // TopicsResponse lists active topics/queues.
 type TopicsResponse struct {
 	Topics []string `json:"topics"`
-}
-
-// PublishRequest represents a message to publish (used by CLI).
-type PublishRequest struct {
-	Topic   string `json:"topic"`
-	Payload []byte `json:"payload"`
 }
 
 // ErrorResponse is returned on API errors.

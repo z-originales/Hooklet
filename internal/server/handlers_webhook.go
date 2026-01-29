@@ -7,22 +7,22 @@ import (
 	"strings"
 	"time"
 
-	"hooklet/internal/api"
+	"hooklet/internal/httpcontract"
 	"hooklet/internal/store"
 
 	"github.com/charmbracelet/log"
 )
 
 // handleWebhook receives POST requests and publishes to RabbitMQ.
-// POST /api/webhook/{topic}
+// POST /httpcontract/webhook/{topic}
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Extract topic from path: /api/webhook/{topic}
-	topic := strings.TrimPrefix(r.URL.Path, api.RoutePublish)
+	// Extract topic from path: /httpcontract/webhook/{topic}
+	topic := strings.TrimPrefix(r.URL.Path, httpcontract.RoutePublish)
 	if topic == "" {
 		writeError(w, "Topic required", http.StatusBadRequest)
 		return
@@ -47,7 +47,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Verify producer authentication if webhook has a token configured
 	if wh.HasToken && wh.TokenHash != nil {
-		token := r.Header.Get(api.HeaderAuthToken)
+		token := r.Header.Get(httpcontract.HeaderAuthToken)
 		if token == "" {
 			log.Warn("Missing auth token for protected webhook", "topic_hash", topicHash, "webhook", wh.Name)
 			writeError(w, "Authentication required", http.StatusUnauthorized)

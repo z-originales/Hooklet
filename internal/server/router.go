@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"hooklet/internal/api"
+	"hooklet/internal/httpcontract"
 )
 
 // newRouter initializes the main request multiplexer and registers routes.
@@ -11,10 +11,10 @@ func (s *Server) newRouter() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Public Routes
-	mux.HandleFunc(api.RouteStatus, s.handleStatus)
-	mux.HandleFunc(api.RouteTopics, s.handleTopics)
-	mux.HandleFunc(api.RoutePublish, s.handleWebhook)
-	mux.HandleFunc(api.RouteSubscribe, s.handleWS)
+	mux.HandleFunc(httpcontract.RouteStatus, s.handleStatus)
+	mux.HandleFunc(httpcontract.RouteTopics, s.handleTopics)
+	mux.HandleFunc(httpcontract.RoutePublish, s.handleWebhook)
+	mux.HandleFunc(httpcontract.RouteSubscribe, s.handleWS)
 
 	// Admin Routes (protected by middleware)
 	// We wrap each handler with the admin auth middleware

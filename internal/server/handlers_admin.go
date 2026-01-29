@@ -7,14 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"hooklet/internal/api"
+	"hooklet/internal/httpcontract"
 	"hooklet/internal/store"
 
 	"github.com/charmbracelet/log"
 )
 
 // handleStatus returns service health information.
-// GET /api/status
+// GET /httpcontract/status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -26,7 +26,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		rabbitStatus = "connected"
 	}
 
-	status := api.StatusResponse{
+	status := httpcontract.StatusResponse{
 		Status:    "ok",
 		Uptime:    time.Since(s.startedAt).Round(time.Second).String(),
 		StartedAt: s.startedAt,
@@ -37,7 +37,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTopics returns the list of active topics.
-// GET /api/topics
+// GET /httpcontract/topics
 func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -51,7 +51,7 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RUnlock()
 
-	writeJSON(w, api.TopicsResponse{Topics: topics})
+	writeJSON(w, httpcontract.TopicsResponse{Topics: topics})
 }
 
 // Admin Handlers

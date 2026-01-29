@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"hooklet/internal/api"
 	"hooklet/internal/config"
+	"hooklet/internal/httpcontract"
 	"hooklet/internal/queue"
 	"hooklet/internal/store"
 
@@ -72,7 +72,7 @@ func (s *Server) Start() error {
 	}
 
 	// Create HTTP servers
-	s.tcpServer = &http.Server{Handler: middlewareSource("api", mux)}
+	s.tcpServer = &http.Server{Handler: middlewareSource("httpcontract", mux)}
 
 	// Unix socket server uses a special handler that injects admin bypass context
 	trustedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,5 +129,5 @@ func writeJSON(w http.ResponseWriter, data any) {
 func writeError(w http.ResponseWriter, message string, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(api.ErrorResponse{Error: message})
+	json.NewEncoder(w).Encode(httpcontract.ErrorResponse{Error: message})
 }

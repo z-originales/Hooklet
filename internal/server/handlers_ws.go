@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"hooklet/internal/api"
+	"hooklet/internal/httpcontract"
 	"hooklet/internal/store"
 
 	"github.com/charmbracelet/log"
@@ -22,13 +22,13 @@ import (
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Parse topics from URL query params
 	var topics []string
-	if t := r.URL.Query().Get(api.QueryParamTopics); t != "" {
+	if t := r.URL.Query().Get(httpcontract.QueryParamTopics); t != "" {
 		topics = strings.Split(t, ",")
 	}
 
 	// Also support topic from path for backward compatibility / convenience
 	// /ws/{topic}
-	pathTopic := strings.TrimPrefix(r.URL.Path, api.RouteSubscribe)
+	pathTopic := strings.TrimPrefix(r.URL.Path, httpcontract.RouteSubscribe)
 	if pathTopic != "" && pathTopic != "/" {
 		topics = append(topics, pathTopic)
 	}
