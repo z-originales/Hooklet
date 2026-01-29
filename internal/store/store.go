@@ -27,6 +27,8 @@ type Webhook struct {
 	Name      string    `json:"name"`
 	TopicID   int64     `json:"topic_id"`   // FK to topics (exact topic only)
 	TopicHash string    `json:"topic_hash"` // SHA256 of Name for URL
+	TokenHash *string   `json:"-"`          // Optional: SHA256 of producer auth token (never exposed)
+	HasToken  bool      `json:"has_token"`  // Indicates if authentication is required
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -94,6 +96,7 @@ func (s *Store) init() error {
 			name TEXT NOT NULL UNIQUE,
 			topic_id INTEGER NOT NULL,
 			topic_hash TEXT NOT NULL,
+			token_hash TEXT DEFAULT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE RESTRICT
 		);`,
@@ -127,6 +130,23 @@ func (s *Store) init() error {
 		}
 	}
 
+	// Run migrations for existing databases
+	if err := s.migrate(); err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	return nil
+}
+
+// migrate handles database migrations for existing databases.
+func (s *Store) migrate() error {
+	// Migration: Add token_hash column to webhooks if it doesn't exist
+	// This is safe to run multiple times (SQLite ignores duplicate column adds)
+	_, err := s.db.Exec(`ALTER TABLE webhooks ADD COLUMN token_hash TEXT DEFAULT NULL`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		// Ignore "duplicate column" error, it means migration already ran
+		return nil
+	}
 	return nil
 }
 
@@ -230,8 +250,15 @@ func (s *Store) DeleteTopic(id int64) error {
 
 // Webhook Methods
 
-// CreateWebhook creates a webhook and its associated exact topic.
+// CreateWebhook creates a webhook and its associated exact topic (without authentication token).
 func (s *Store) CreateWebhook(name string) (*Webhook, error) {
+	return s.CreateWebhookWithToken(name, "")
+}
+
+// CreateWebhookWithToken creates a webhook with an optional authentication token.
+// If token is empty, the webhook will not require authentication.
+// The token is hashed before storage and cannot be retrieved later.
+func (s *Store) CreateWebhookWithToken(name, token string) (*Webhook, error) {
 	// Webhooks cannot be patterns
 	if isPattern(name) {
 		return nil, fmt.Errorf("webhook name cannot contain wildcards")
@@ -244,9 +271,16 @@ func (s *Store) CreateWebhook(name string) (*Webhook, error) {
 	}
 
 	hash := HashString(name)
-	query := `INSERT INTO webhooks (name, topic_id, topic_hash, created_at) VALUES (?, ?, ?, ?)`
 	now := time.Now()
-	res, err := s.db.Exec(query, name, topic.ID, hash, now)
+
+	var tokenHash *string
+	if token != "" {
+		h := HashString(token)
+		tokenHash = &h
+	}
+
+	query := `INSERT INTO webhooks (name, topic_id, topic_hash, token_hash, created_at) VALUES (?, ?, ?, ?, ?)`
+	res, err := s.db.Exec(query, name, topic.ID, hash, tokenHash, now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create webhook: %w", err)
 	}
@@ -261,41 +295,53 @@ func (s *Store) CreateWebhook(name string) (*Webhook, error) {
 		Name:      name,
 		TopicID:   topic.ID,
 		TopicHash: hash,
+		TokenHash: tokenHash,
+		HasToken:  tokenHash != nil,
 		CreatedAt: now,
 	}, nil
 }
 
 // GetWebhookByName retrieves a webhook by name.
 func (s *Store) GetWebhookByName(name string) (*Webhook, error) {
-	query := `SELECT id, name, topic_id, topic_hash, created_at FROM webhooks WHERE name = ?`
+	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks WHERE name = ?`
 	var w Webhook
-	err := s.db.QueryRow(query, name).Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &w.CreatedAt)
+	var tokenHash sql.NullString
+	err := s.db.QueryRow(query, name).Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if tokenHash.Valid {
+		w.TokenHash = &tokenHash.String
+		w.HasToken = true
 	}
 	return &w, nil
 }
 
 // GetWebhookByHash retrieves a webhook by its topic hash (for ingestion).
 func (s *Store) GetWebhookByHash(hash string) (*Webhook, error) {
-	query := `SELECT id, name, topic_id, topic_hash, created_at FROM webhooks WHERE topic_hash = ?`
+	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks WHERE topic_hash = ?`
 	var w Webhook
-	err := s.db.QueryRow(query, hash).Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &w.CreatedAt)
+	var tokenHash sql.NullString
+	err := s.db.QueryRow(query, hash).Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
+	if tokenHash.Valid {
+		w.TokenHash = &tokenHash.String
+		w.HasToken = true
+	}
 	return &w, nil
 }
 
 // ListWebhooks returns all webhooks.
 func (s *Store) ListWebhooks() ([]Webhook, error) {
-	query := `SELECT id, name, topic_id, topic_hash, created_at FROM webhooks ORDER BY created_at DESC`
+	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks ORDER BY created_at DESC`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list webhooks: %w", err)
@@ -305,8 +351,13 @@ func (s *Store) ListWebhooks() ([]Webhook, error) {
 	var webhooks []Webhook
 	for rows.Next() {
 		var w Webhook
-		if err := rows.Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &w.CreatedAt); err != nil {
+		var tokenHash sql.NullString
+		if err := rows.Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt); err != nil {
 			return nil, err
+		}
+		if tokenHash.Valid {
+			w.TokenHash = &tokenHash.String
+			w.HasToken = true
 		}
 		webhooks = append(webhooks, w)
 	}
@@ -322,6 +373,55 @@ func (s *Store) DeleteWebhook(id int64) error {
 		return fmt.Errorf("failed to delete webhook: %w", err)
 	}
 	return nil
+}
+
+// SetWebhookToken sets or updates the authentication token for a webhook.
+// The token is hashed before storage and cannot be retrieved later.
+func (s *Store) SetWebhookToken(id int64, tokenHash string) error {
+	query := `UPDATE webhooks SET token_hash = ? WHERE id = ?`
+	res, err := s.db.Exec(query, tokenHash, id)
+	if err != nil {
+		return fmt.Errorf("failed to set webhook token: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("webhook not found")
+	}
+	return nil
+}
+
+// ClearWebhookToken removes the authentication token from a webhook.
+// After this, the webhook will no longer require authentication.
+func (s *Store) ClearWebhookToken(id int64) error {
+	query := `UPDATE webhooks SET token_hash = NULL WHERE id = ?`
+	res, err := s.db.Exec(query, id)
+	if err != nil {
+		return fmt.Errorf("failed to clear webhook token: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("webhook not found")
+	}
+	return nil
+}
+
+// GetWebhookByID retrieves a webhook by its ID.
+func (s *Store) GetWebhookByID(id int64) (*Webhook, error) {
+	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks WHERE id = ?`
+	var w Webhook
+	var tokenHash sql.NullString
+	err := s.db.QueryRow(query, id).Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if tokenHash.Valid {
+		w.TokenHash = &tokenHash.String
+		w.HasToken = true
+	}
+	return &w, nil
 }
 
 // Consumer Methods
