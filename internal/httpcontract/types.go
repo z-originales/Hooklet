@@ -6,9 +6,9 @@ import "time"
 // API route constants
 const (
 	// Service endpoints
-	RouteStatus    = "/httpcontract/status"
+	RouteStatus    = "/api/status"
 	RoutePublish   = "/webhook/" // + {topic}
-	RouteTopics    = "/httpcontract/topics"
+	RouteTopics    = "/api/topics"
 	RouteSubscribe = "/ws/" // + {topic}
 )
 
