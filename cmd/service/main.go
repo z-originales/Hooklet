@@ -45,7 +45,7 @@ type contextKey string
 const ctxKeyAdminBypass contextKey = "admin_bypass"
 
 func main() {
-	port := getEnv("PORT", httpcontract.DefaultPort)
+	port := getEnv("PORT", config.DefaultPort)
 	dbPath := getEnv("HOOKLET_DB_PATH", "hooklet.db")
 
 	// Build RabbitMQ URL from components (or use full URL if provided)
@@ -121,7 +121,7 @@ func main() {
 	// Create listener for Admin/Local Unix Socket
 	// On Windows, if 1809+ this works as Unix Sockets.
 	// If older, it falls back to net.Listen behavior or might fail, but Go >= 1.23 handles it well.
-	socketPath := getEnv("HOOKLET_SOCKET", httpcontract.DefaultSocketPath)
+	socketPath := getEnv("HOOKLET_SOCKET", config.DefaultSocketPath)
 
 	// Clean up old socket file
 	if _, err := os.Stat(socketPath); err == nil {
