@@ -108,17 +108,24 @@ func (c *Context) adminRequest(method, path string, body any) (*http.Response, e
 
 // Webhook Commands
 type WebhookCmd struct {
-	Create WebhookCreateCmd `cmd:"" help:"Create a new webhook"`
-	List   WebhookListCmd   `cmd:"" help:"List all webhooks"`
-	Delete WebhookDeleteCmd `cmd:"" help:"Delete a webhook"`
+	Create     WebhookCreateCmd     `cmd:"" help:"Create a new webhook"`
+	List       WebhookListCmd       `cmd:"" help:"List all webhooks"`
+	Delete     WebhookDeleteCmd     `cmd:"" help:"Delete a webhook"`
+	SetToken   WebhookSetTokenCmd   `cmd:"" help:"Generate/regenerate auth token for a webhook"`
+	ClearToken WebhookClearTokenCmd `cmd:"" help:"Remove auth token from a webhook (disable producer auth)"`
 }
 
 type WebhookCreateCmd struct {
-	Name string `arg:"" help:"Name of the webhook"`
+	Name      string `arg:"" help:"Name of the webhook"`
+	WithToken bool   `help:"Generate an authentication token for producers" default:"false"`
 }
 
 func (c *WebhookCreateCmd) Run(ctx *Context) error {
-	resp, err := ctx.adminRequest(http.MethodPost, "/admin/webhooks", map[string]string{"name": c.Name})
+	req := map[string]interface{}{
+		"name":       c.Name,
+		"with_token": c.WithToken,
+	}
+	resp, err := ctx.adminRequest(http.MethodPost, "/admin/webhooks", req)
 	if err != nil {
 		return err
 	}
@@ -129,17 +136,28 @@ func (c *WebhookCreateCmd) Run(ctx *Context) error {
 		return fmt.Errorf("failed: %s", body)
 	}
 
-	var wh store.Webhook
-	if err := json.NewDecoder(resp.Body).Decode(&wh); err != nil {
+	// Response may include token if with_token was true
+	var result struct {
+		store.Webhook
+		Token string `json:"token,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return err
 	}
 
 	fmt.Printf("Webhook created!\n")
-	fmt.Printf("  Name:      %s\n", wh.Name)
-	fmt.Printf("  ID:        %d\n", wh.ID)
-	fmt.Printf("  Topic URL: /webhook/%s\n", wh.TopicHash)
-	fmt.Println("")
-	fmt.Println("Use the Topic URL to publish webhooks. The hash prevents topic enumeration.")
+	fmt.Printf("  Name:      %s\n", result.Name)
+	fmt.Printf("  ID:        %d\n", result.ID)
+	fmt.Printf("  Topic URL: /webhook/%s\n", result.TopicHash)
+	fmt.Printf("  Auth:      %s\n", map[bool]string{true: "required", false: "none"}[result.HasToken])
+
+	if result.Token != "" {
+		fmt.Printf("\n  Token: %s\n", result.Token)
+		fmt.Println("\n  SAVE THIS TOKEN! It will NOT be shown again.")
+		fmt.Println("  Producers must send it via X-Hooklet-Token header.")
+	} else {
+		fmt.Println("\nUse the Topic URL to publish webhooks. The hash prevents topic enumeration.")
+	}
 	return nil
 }
 
@@ -169,8 +187,13 @@ func (c *WebhookListCmd) Run(ctx *Context) error {
 
 	fmt.Println("Webhooks:")
 	for _, w := range webhooks {
+		authStatus := "none"
+		if w.HasToken {
+			authStatus = "token required"
+		}
 		fmt.Printf("  [%d] %s\n", w.ID, w.Name)
 		fmt.Printf("      URL: /webhook/%s\n", w.TopicHash)
+		fmt.Printf("      Auth: %s\n", authStatus)
 		fmt.Printf("      Created: %s\n", w.CreatedAt.Format(time.RFC3339))
 	}
 	return nil
@@ -194,6 +217,63 @@ func (c *WebhookDeleteCmd) Run(ctx *Context) error {
 	}
 
 	fmt.Printf("Webhook %d deleted\n", c.ID)
+	return nil
+}
+
+// WebhookSetTokenCmd generates/regenerates an auth token for a webhook.
+type WebhookSetTokenCmd struct {
+	ID int64 `arg:"" help:"ID of the webhook"`
+}
+
+func (c *WebhookSetTokenCmd) Run(ctx *Context) error {
+	path := fmt.Sprintf("/admin/webhooks/%d/set-token", c.ID)
+	resp, err := ctx.adminRequest(http.MethodPost, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed: %s", body)
+	}
+
+	var result struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+
+	fmt.Printf("Token generated for webhook '%s' (ID: %d)\n", result.Name, result.ID)
+	fmt.Printf("\n  Token: %s\n", result.Token)
+	fmt.Println("\n  SAVE THIS TOKEN! It will NOT be shown again.")
+	fmt.Println("  Producers must send it via X-Hooklet-Token header.")
+	return nil
+}
+
+// WebhookClearTokenCmd removes the auth token from a webhook.
+type WebhookClearTokenCmd struct {
+	ID int64 `arg:"" help:"ID of the webhook"`
+}
+
+func (c *WebhookClearTokenCmd) Run(ctx *Context) error {
+	path := fmt.Sprintf("/admin/webhooks/%d/clear-token", c.ID)
+	resp, err := ctx.adminRequest(http.MethodPost, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed: %s", body)
+	}
+
+	fmt.Printf("Token removed from webhook %d\n", c.ID)
+	fmt.Println("This webhook no longer requires producer authentication.")
 	return nil
 }
 
