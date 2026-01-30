@@ -72,7 +72,7 @@ func (s *Server) Start() error {
 	}
 
 	// Create HTTP servers
-	s.tcpServer = &http.Server{Handler: middlewareSource("httpcontract", mux)}
+	s.tcpServer = &http.Server{Handler: middlewareSource("api", mux)}
 
 	// Unix socket server uses a special handler that injects admin bypass context
 	trustedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
