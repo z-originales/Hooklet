@@ -53,18 +53,3 @@ func (s *Server) adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		next.ServeHTTP(w, r)
 	}
 }
-
-// producerAuthMiddleware verifies the token for webhook ingestion.
-func (s *Server) producerAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Logic to check producer token needs the webhook context (topic hash).
-		// Since extracting the topic happens inside the handler in the current design,
-		// we might need to keep the auth check inside the handler OR parse the path here.
-		//
-		// For now, to keep it simple and safe, we will leave producer auth inside the
-		// handleWebhook function as it depends on looking up the specific webhook first.
-		// Moving it here would require duplicating the lookup logic.
-
-		next.ServeHTTP(w, r)
-	}
-}

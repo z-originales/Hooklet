@@ -20,18 +20,17 @@ const (
 
 // Config holds the service configuration.
 type Config struct {
-	Port            string
-	DBPath          string
-	RabbitURL       string
-	RabbitHost      string
-	RabbitPort      string
-	RabbitUser      string
-	RabbitPass      string
-	MessageTTL      int
-	QueueExpiry     int
-	SocketPath      string
-	AdminToken      string
-	AdminSocketPath string
+	Port        string
+	DBPath      string
+	RabbitURL   string
+	RabbitHost  string
+	RabbitPort  string
+	RabbitUser  string
+	RabbitPass  string
+	MessageTTL  int
+	QueueExpiry int
+	SocketPath  string
+	AdminToken  string
 }
 
 // Load reads configuration from environment variables or uses defaults.
