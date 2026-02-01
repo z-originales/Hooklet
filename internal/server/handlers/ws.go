@@ -1,4 +1,4 @@
-package server
+package handlers
 
 import (
 	"context"
@@ -8,27 +8,43 @@ import (
 	"strings"
 	"time"
 
-	"hooklet/internal/httpcontract"
+	"hooklet/internal/api"
+	"hooklet/internal/queue"
+	"hooklet/internal/server/auth"
 	"hooklet/internal/store"
 
 	"github.com/charmbracelet/log"
 	"github.com/coder/websocket"
 )
 
-// handleWS upgrades to WebSocket and streams messages from RabbitMQ.
-// GET /ws/?topics=t1,t2
-// Authentication: Client must send {"type":"auth","token":"..."} as first message.
-// This prevents token leakage via URL query params, logs, or referrer headers.
-func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+// WSHandler upgrades to WebSocket and streams messages from RabbitMQ.
+type WSHandler struct {
+	mq    *queue.Client
+	db    *store.Store
+	track func(string)
+}
+
+// NewWSHandler creates a handler for WebSocket streaming.
+func NewWSHandler(mq *queue.Client, db *store.Store, trackTopic func(string)) *WSHandler {
+	return &WSHandler{mq: mq, db: db, track: trackTopic}
+}
+
+// Subscribe handles GET /ws?topics=t1,t2 and /ws/{topic}.
+func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	// Parse topics from URL query params
 	var topics []string
-	if t := r.URL.Query().Get(httpcontract.QueryParamTopics); t != "" {
-		topics = strings.Split(t, ",")
+	if t := r.URL.Query().Get(api.QueryParamTopics); t != "" {
+		for _, name := range strings.Split(t, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				topics = append(topics, name)
+			}
+		}
 	}
 
 	// Also support topic from path for backward compatibility / convenience
 	// /ws/{topic}
-	pathTopic := strings.TrimPrefix(r.URL.Path, httpcontract.RouteSubscribe)
+	pathTopic := strings.TrimPrefix(r.URL.Path, api.RouteSubscribe)
 	if pathTopic != "" && pathTopic != "/" {
 		topics = append(topics, pathTopic)
 	}
@@ -56,7 +72,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	var isAdminBypass bool
 
 	// Check if this is a trusted admin connection (CLI via Unix socket)
-	if bypass, ok := r.Context().Value(ctxKeyAdminBypass).(bool); ok && bypass {
+	if auth.IsAdminBypass(r.Context()) {
 		// Create a synthetic admin consumer for tracking (has access to all topics)
 		consumer = &store.Consumer{
 			ID:   0,
@@ -85,7 +101,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate Token against DB
-		consumer, err = s.db.GetConsumerByToken(authReq.Token)
+		consumer, err = h.db.GetConsumerByToken(authReq.Token)
 		if err != nil {
 			log.Error("Failed to validate token", "error", err)
 			conn.Close(websocket.StatusInternalError, "Internal error")
@@ -102,7 +118,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Admin bypass has access to everything, regular consumers need explicit permission
 	if !isAdminBypass {
 		for _, t := range topics {
-			allowed, err := s.db.ConsumerCanAccess(consumer.ID, t)
+			allowed, err := h.db.ConsumerCanAccess(consumer.ID, t)
 			if err != nil {
 				log.Error("Failed to check consumer access", "error", err)
 				conn.Close(websocket.StatusInternalError, "Internal error")
@@ -131,14 +147,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	log.Info("WebSocket client authenticated", "consumer_id", consumerID, "topics", topics, "remote", r.RemoteAddr)
 
 	// Track topics
-	s.mu.Lock()
-	for _, t := range topics {
-		s.topics[t] = struct{}{}
+	if h.track != nil {
+		for _, t := range topics {
+			h.track(t)
+		}
 	}
-	s.mu.Unlock()
 
 	// Subscribe to queue with specific topics
-	msgs, err := s.mq.Subscribe(consumerID, topics)
+	msgs, err := h.mq.Subscribe(consumerID, topics)
 	if err != nil {
 		log.Error("Failed to subscribe", "consumer_id", consumerID, "error", err)
 		conn.Close(websocket.StatusInternalError, "Failed to subscribe")
@@ -161,6 +177,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := conn.Write(ctx, websocket.MessageText, msg.Body); err != nil {
 				log.Error("Failed to write to websocket", "error", err)
+				conn.Close(websocket.StatusInternalError, "Write failed")
 				return
 			}
 			// Acknowledge message only after successful write to WebSocket

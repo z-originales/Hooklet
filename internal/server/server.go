@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -10,8 +9,8 @@ import (
 	"time"
 
 	"hooklet/internal/config"
-	"hooklet/internal/httpcontract"
 	"hooklet/internal/queue"
+	"hooklet/internal/server/auth"
 	"hooklet/internal/store"
 
 	"github.com/charmbracelet/log"
@@ -76,7 +75,7 @@ func (s *Server) Start() error {
 
 	// Unix socket server uses a special handler that injects admin bypass context
 	trustedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), ctxKeyAdminBypass, true)
+		ctx := auth.WithAdminBypass(r.Context())
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	})
 	s.unixServer = &http.Server{Handler: middlewareSource("unix", trustedHandler)}
@@ -117,17 +116,26 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Helper: writeJSON sends a JSON response.
-func writeJSON(w http.ResponseWriter, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Error("Failed to encode JSON response", "error", err)
-	}
+// trackTopic records active topics for listing.
+func (s *Server) trackTopic(topic string) {
+	s.mu.Lock()
+	s.topics[topic] = struct{}{}
+	s.mu.Unlock()
 }
 
-// Helper: writeError sends a JSON error response.
-func writeError(w http.ResponseWriter, message string, status int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(httpcontract.ErrorResponse{Error: message})
+// listTopics returns a snapshot of active topics.
+func (s *Server) listTopics() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	topics := make([]string, 0, len(s.topics))
+	for t := range s.topics {
+		topics = append(topics, t)
+	}
+	return topics
+}
+
+// rabbitConnected reports MQ connectivity.
+func (s *Server) rabbitConnected() bool {
+	return s.mq.IsConnected()
 }

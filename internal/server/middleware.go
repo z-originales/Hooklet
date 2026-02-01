@@ -3,14 +3,11 @@ package server
 import (
 	"net/http"
 
+	"hooklet/internal/server/auth"
+	"hooklet/internal/server/httpresponse"
+
 	"github.com/charmbracelet/log"
 )
-
-// Context key for admin bypass
-// This key is private to the package, ensuring only this package can create or check it.
-type contextKey string
-
-const ctxKeyAdminBypass contextKey = "admin_bypass"
 
 // middlewareSource adds logging context for the request source (tcp vs unix).
 func middlewareSource(source string, next http.Handler) http.Handler {
@@ -27,7 +24,7 @@ func middlewareSource(source string, next http.Handler) http.Handler {
 func (s *Server) adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 1. Check if request comes from trusted Unix socket (Admin Bypass)
-		if bypass, ok := r.Context().Value(ctxKeyAdminBypass).(bool); ok && bypass {
+		if auth.IsAdminBypass(r.Context()) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -45,8 +42,7 @@ func (s *Server) adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		// Otherwise (remote OR local with token provided), enforce verification
 		if token != expected {
-			// writeError is defined in server.go, but accessible here as part of same package
-			writeError(w, "Unauthorized", http.StatusUnauthorized)
+			httpresponse.WriteError(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 

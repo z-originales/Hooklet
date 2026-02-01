@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	"hooklet/internal/httpcontract"
+	"hooklet/internal/api"
 	"hooklet/internal/store"
 
 	"github.com/alecthomas/kong"
@@ -486,7 +486,7 @@ func (c *ConsumerRegenTokenCmd) Run(ctx *Context) error {
 type StatusCmd struct{}
 
 func (c *StatusCmd) Run(ctx *Context) error {
-	url := ctx.baseURL() + httpcontract.RouteStatus
+	url := ctx.baseURL() + api.RouteStatus
 
 	resp, err := ctx.getClient().Get(url)
 	if err != nil {
@@ -499,7 +499,7 @@ func (c *StatusCmd) Run(ctx *Context) error {
 		return fmt.Errorf("service error: %s", body)
 	}
 
-	var status httpcontract.StatusResponse
+	var status api.StatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}

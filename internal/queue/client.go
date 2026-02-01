@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -232,7 +233,7 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 
 	// Bind the queue to the exchange for each topic
 	for _, topic := range topics {
-		routingKey := fmt.Sprintf("webhook.%s", topic)
+		routingKey := fmt.Sprintf("webhook.%s", normalizeTopicPattern(topic))
 		err := ch.QueueBind(
 			q.Name,
 			routingKey,
@@ -261,4 +262,14 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 	}
 
 	return msgs, nil
+}
+
+// normalizeTopicPattern converts Hooklet patterns to AMQP topic patterns.
+// Hooklet: "*" matches one level, "**" matches all levels.
+// AMQP: "*" matches one word, "#" matches zero or more words.
+func normalizeTopicPattern(topic string) string {
+	pattern := strings.ReplaceAll(topic, "**", "#")
+	pattern = strings.ReplaceAll(pattern, "#.", "#")
+	pattern = strings.ReplaceAll(pattern, ".#", "#")
+	return pattern
 }

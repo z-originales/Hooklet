@@ -1,4 +1,4 @@
-package server
+package handlers
 
 import (
 	"context"
@@ -7,24 +7,37 @@ import (
 	"strings"
 	"time"
 
-	"hooklet/internal/httpcontract"
+	"hooklet/internal/api"
+	"hooklet/internal/queue"
+	"hooklet/internal/server/httpresponse"
 	"hooklet/internal/store"
 
 	"github.com/charmbracelet/log"
 )
 
-// handleWebhook receives POST requests and publishes to RabbitMQ.
-// POST /httpcontract/webhook/{topic}
-func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+// WebhookHandler receives POST requests and publishes to RabbitMQ.
+type WebhookHandler struct {
+	mq    *queue.Client
+	db    *store.Store
+	track func(string)
+}
+
+// NewWebhookHandler creates a handler for webhook ingestion.
+func NewWebhookHandler(mq *queue.Client, db *store.Store, trackTopic func(string)) *WebhookHandler {
+	return &WebhookHandler{mq: mq, db: db, track: trackTopic}
+}
+
+// Publish handles POST /webhook/{topic}.
+func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Extract topic from path: /httpcontract/webhook/{topic}
-	topic := strings.TrimPrefix(r.URL.Path, httpcontract.RoutePublish)
+	// Extract topic from path: /webhook/{topic}
+	topic := strings.TrimPrefix(r.URL.Path, api.RoutePublish)
 	if topic == "" {
-		writeError(w, "Topic required", http.StatusBadRequest)
+		httpresponse.WriteError(w, "Topic required", http.StatusBadRequest)
 		return
 	}
 
@@ -33,41 +46,41 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// This prevents topic enumeration - only those who know the hash can publish.
 	// We look up the hash directly in the DB without re-hashing.
 	topicHash := topic // The URL segment IS the hash
-	wh, err := s.db.GetWebhookByHash(topicHash)
+	wh, err := h.db.GetWebhookByHash(topicHash)
 	if err != nil {
 		log.Error("Failed to check webhook existence", "topic_hash", topicHash, "error", err)
-		writeError(w, "Internal Server Error", http.StatusInternalServerError)
+		httpresponse.WriteError(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	if wh == nil {
 		log.Warn("Attempt to publish to non-existent webhook", "topic_hash", topicHash)
-		writeError(w, "Webhook not found", http.StatusNotFound)
+		httpresponse.WriteError(w, "Webhook not found", http.StatusNotFound)
 		return
 	}
 
 	// Verify producer authentication if webhook has a token configured
 	if wh.HasToken && wh.TokenHash != nil {
-		token := r.Header.Get(httpcontract.HeaderAuthToken)
+		token := r.Header.Get(api.HeaderAuthToken)
 		if token == "" {
 			log.Warn("Missing auth token for protected webhook", "topic_hash", topicHash, "webhook", wh.Name)
-			writeError(w, "Authentication required", http.StatusUnauthorized)
+			httpresponse.WriteError(w, "Authentication required", http.StatusUnauthorized)
 			return
 		}
 		if store.HashString(token) != *wh.TokenHash {
 			log.Warn("Invalid auth token for webhook", "topic_hash", topicHash, "webhook", wh.Name)
-			writeError(w, "Invalid token", http.StatusUnauthorized)
+			httpresponse.WriteError(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 	}
 
 	// Read body
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Error("Failed to read body", "error", err)
-		writeError(w, "Failed to read body", http.StatusInternalServerError)
+		httpresponse.WriteError(w, "Failed to read body", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
 
 	// Publish to queue
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -75,16 +88,16 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Publish to queue using the webhook's original name as routing key
 	// (RabbitMQ routing uses the human-readable name internally)
-	if err := s.mq.Publish(ctx, wh.Name, body); err != nil {
+	if err := h.mq.Publish(ctx, wh.Name, body); err != nil {
 		log.Error("Failed to publish", "topic", wh.Name, "error", err)
-		writeError(w, "Failed to publish", http.StatusInternalServerError)
+		httpresponse.WriteError(w, "Failed to publish", http.StatusInternalServerError)
 		return
 	}
 
 	// Track topic (by name, not hash)
-	s.mu.Lock()
-	s.topics[wh.Name] = struct{}{}
-	s.mu.Unlock()
+	if h.track != nil {
+		h.track(wh.Name)
+	}
 
 	log.Info("Webhook received", "topic", wh.Name, "hash", topicHash, "size", len(body))
 	w.WriteHeader(http.StatusAccepted)
