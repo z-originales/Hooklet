@@ -593,6 +593,30 @@ func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) er
 	}
 	defer tx.Rollback()
 
+	getOrCreateTopic := func(name string) (*Topic, error) {
+		var t Topic
+		row := tx.QueryRow(`SELECT id, name, is_pattern, created_at FROM topics WHERE name = ?`, name)
+		err := row.Scan(&t.ID, &t.Name, &t.IsPattern, &t.CreatedAt)
+		switch {
+		case err == nil:
+			return &t, nil
+		case err != sql.ErrNoRows:
+			return nil, err
+		}
+
+		pattern := isPattern(name)
+		res, err := tx.Exec(`INSERT INTO topics (name, is_pattern, created_at) VALUES (?, ?, ?)`,
+			name, pattern, time.Now())
+		if err != nil {
+			return nil, fmt.Errorf("failed to create topic %s: %w", name, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get topic id for %s: %w", name, err)
+		}
+		return &Topic{ID: id, Name: name, IsPattern: pattern}, nil
+	}
+
 	// Clear existing subscriptions
 	if _, err := tx.Exec(`DELETE FROM topic_subscriptions WHERE consumer_id = ?`, consumerID); err != nil {
 		return fmt.Errorf("failed to clear subscriptions: %w", err)
@@ -606,21 +630,9 @@ func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) er
 				continue
 			}
 
-			// Get or create topic
-			topic, err := s.GetTopicByName(name)
+			topic, err := getOrCreateTopic(name)
 			if err != nil {
 				return err
-			}
-			if topic == nil {
-				// Create the topic
-				pattern := isPattern(name)
-				res, err := tx.Exec(`INSERT INTO topics (name, is_pattern, created_at) VALUES (?, ?, ?)`,
-					name, pattern, time.Now())
-				if err != nil {
-					return fmt.Errorf("failed to create topic %s: %w", name, err)
-				}
-				topicID, _ := res.LastInsertId()
-				topic = &Topic{ID: topicID, Name: name, IsPattern: pattern}
 			}
 
 			// Create subscription
