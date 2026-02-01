@@ -34,10 +34,10 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract topic from path: /webhook/{topic}
-	topic := strings.TrimPrefix(r.URL.Path, api.RoutePublish)
-	if topic == "" {
-		httpresponse.WriteError(w, "Topic required", http.StatusBadRequest)
+	// Extract webhook hash from path: /webhook/{hash}
+	hookHash := strings.TrimPrefix(r.URL.Path, api.RoutePublish)
+	if hookHash == "" {
+		httpresponse.WriteError(w, "Webhook hash required", http.StatusBadRequest)
 		return
 	}
 
@@ -45,15 +45,15 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	// Strict Mode: The URL contains the topic_hash directly (e.g., /webhook/a1b2c3...).
 	// This prevents topic enumeration - only those who know the hash can publish.
 	// We look up the hash directly in the DB without re-hashing.
-	topicHash := topic // The URL segment IS the hash
-	wh, err := h.db.GetWebhookByHash(topicHash)
+	// The URL segment IS the hash
+	wh, err := h.db.GetWebhookByHash(hookHash)
 	if err != nil {
-		log.Error("Failed to check webhook existence", "topic_hash", topicHash, "error", err)
+		log.Error("Failed to check webhook existence", "topic_hash", hookHash, "error", err)
 		httpresponse.WriteError(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	if wh == nil {
-		log.Warn("Attempt to publish to non-existent webhook", "topic_hash", topicHash)
+		log.Warn("Attempt to publish to non-existent webhook", "topic_hash", hookHash)
 		httpresponse.WriteError(w, "Webhook not found", http.StatusNotFound)
 		return
 	}
@@ -62,12 +62,12 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	if wh.HasToken && wh.TokenHash != nil {
 		token := r.Header.Get(api.HeaderAuthToken)
 		if token == "" {
-			log.Warn("Missing auth token for protected webhook", "topic_hash", topicHash, "webhook", wh.Name)
+			log.Warn("Missing auth token for protected webhook", "topic_hash", hookHash, "webhook", wh.Name)
 			httpresponse.WriteError(w, "Authentication required", http.StatusUnauthorized)
 			return
 		}
 		if store.HashString(token) != *wh.TokenHash {
-			log.Warn("Invalid auth token for webhook", "topic_hash", topicHash, "webhook", wh.Name)
+			log.Warn("Invalid auth token for webhook", "topic_hash", hookHash, "webhook", wh.Name)
 			httpresponse.WriteError(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
@@ -99,6 +99,6 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 		h.track(wh.Name)
 	}
 
-	log.Info("Webhook received", "topic", wh.Name, "hash", topicHash, "size", len(body))
+	log.Info("Webhook received", "topic", wh.Name, "hash", hookHash, "size", len(body))
 	w.WriteHeader(http.StatusAccepted)
 }

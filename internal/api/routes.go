@@ -5,7 +5,7 @@ package api
 const (
 	// Service endpoints
 	RouteStatus    = "/api/status"
-	RoutePublish   = "/webhook/" // + {topic}
+	RoutePublish   = "/webhook/" // + {hash}
 	RouteTopics    = "/api/topics"
 	RouteSubscribe = "/ws/" // + {topic}
 )
