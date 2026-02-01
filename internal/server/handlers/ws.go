@@ -31,6 +31,8 @@ func NewWSHandler(mq *queue.Client, db *store.Store, trackTopic func(string)) *W
 
 // Subscribe handles GET /ws?topics=t1,t2 and /ws/{topic}.
 func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
+	const writeTimeout = 10 * time.Second
+
 	// Parse topics from URL query params
 	var topics []string
 	if t := r.URL.Query().Get(api.QueryParamTopics); t != "" {
@@ -135,11 +137,14 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	// Send auth success acknowledgement
 	ack := map[string]string{"type": "auth_ok", "consumer": consumer.Name}
 	ackBytes, _ := json.Marshal(ack)
-	if err := conn.Write(r.Context(), websocket.MessageText, ackBytes); err != nil {
+	ackCtx, ackCancel := context.WithTimeout(r.Context(), writeTimeout)
+	if err := conn.Write(ackCtx, websocket.MessageText, ackBytes); err != nil {
+		ackCancel()
 		log.Error("Failed to send auth ack", "error", err)
 		conn.Close(websocket.StatusInternalError, "Failed to send ack")
 		return
 	}
+	ackCancel()
 
 	// Consumer ID is now the Consumer ID / Name to ensure tracking
 	consumerID := fmt.Sprintf("%s-%d", consumer.Name, consumer.ID)
@@ -175,11 +180,14 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 				conn.Close(websocket.StatusNormalClosure, "Queue closed")
 				return
 			}
-			if err := conn.Write(ctx, websocket.MessageText, msg.Body); err != nil {
+			writeCtx, writeCancel := context.WithTimeout(ctx, writeTimeout)
+			if err := conn.Write(writeCtx, websocket.MessageText, msg.Body); err != nil {
+				writeCancel()
 				log.Error("Failed to write to websocket", "error", err)
 				conn.Close(websocket.StatusInternalError, "Write failed")
 				return
 			}
+			writeCancel()
 			// Acknowledge message only after successful write to WebSocket
 			if err := msg.Ack(false); err != nil {
 				log.Error("Failed to ack message", "error", err)
