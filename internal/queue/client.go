@@ -200,11 +200,16 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 // reconnect and retrieve messages that arrived while they were offline (within TTL).
 func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Delivery, error) {
 	c.mu.RLock()
-	ch := c.channel
+	conn := c.conn
 	c.mu.RUnlock()
 
-	if ch == nil {
+	if conn == nil || conn.IsClosed() {
 		return nil, fmt.Errorf("not connected to RabbitMQ")
+	}
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
 	// Declare a durable queue for this consumer
@@ -228,6 +233,7 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 		args,
 	)
 	if err != nil {
+		ch.Close()
 		return nil, fmt.Errorf("failed to declare consumer queue: %w", err)
 	}
 
@@ -243,6 +249,7 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 		)
 		if err != nil {
 			ch.QueueDelete(queueName, false, false, false)
+			ch.Close()
 			return nil, fmt.Errorf("failed to bind topic %s: %w", topic, err)
 		}
 	}
@@ -258,10 +265,20 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 		nil,
 	)
 	if err != nil {
+		ch.Close()
 		return nil, fmt.Errorf("failed to consume: %w", err)
 	}
 
-	return msgs, nil
+	out := make(chan amqp.Delivery)
+	go func() {
+		defer ch.Close()
+		defer close(out)
+		for msg := range msgs {
+			out <- msg
+		}
+	}()
+
+	return out, nil
 }
 
 // normalizeTopicPattern converts Hooklet patterns to AMQP topic patterns.
