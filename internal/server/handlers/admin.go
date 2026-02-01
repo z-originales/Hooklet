@@ -40,7 +40,7 @@ func (h *AdminHandler) Webhooks(w http.ResponseWriter, r *http.Request) {
 			Name      string `json:"name"`
 			WithToken bool   `json:"with_token"` // If true, generate an auth token for producers
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSON(r, &req); err != nil {
 			httpresponse.WriteError(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
@@ -221,7 +221,7 @@ func (h *AdminHandler) Consumers(w http.ResponseWriter, r *http.Request) {
 			Name          string `json:"name"`
 			Subscriptions string `json:"subscriptions"` // comma separated topics/patterns (use "**" for all)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSON(r, &req); err != nil {
 			httpresponse.WriteError(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
@@ -316,7 +316,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 			Subscriptions   *string `json:"subscriptions,omitempty"`
 			RegenerateToken bool    `json:"regenerate_token,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSON(r, &req); err != nil {
 			httpresponse.WriteError(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
@@ -372,7 +372,7 @@ func (h *AdminHandler) handleConsumerSubscribe(w http.ResponseWriter, r *http.Re
 	var req struct {
 		Topic string `json:"topic"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpresponse.WriteError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -401,7 +401,7 @@ func (h *AdminHandler) handleConsumerUnsubscribe(w http.ResponseWriter, r *http.
 	var req struct {
 		Topic string `json:"topic"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpresponse.WriteError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -430,4 +430,8 @@ func parseID(s string) (int64, error) {
 	var id int64
 	_, err := fmt.Sscanf(s, "%d", &id)
 	return id, err
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	return json.NewDecoder(r.Body).Decode(dst)
 }

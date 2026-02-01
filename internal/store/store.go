@@ -53,6 +53,10 @@ type Store struct {
 	db *sql.DB
 }
 
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
 func New(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -131,6 +135,19 @@ func (s *Store) init() error {
 	}
 
 	return nil
+}
+
+func scanWebhook(row rowScanner) (*Webhook, error) {
+	var w Webhook
+	var tokenHash sql.NullString
+	if err := row.Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt); err != nil {
+		return nil, err
+	}
+	if tokenHash.Valid {
+		w.TokenHash = &tokenHash.String
+		w.HasToken = true
+	}
+	return &w, nil
 }
 
 // HashString returns SHA256 hex string
@@ -287,39 +304,27 @@ func (s *Store) CreateWebhookWithToken(name, token string) (*Webhook, error) {
 // GetWebhookByName retrieves a webhook by name.
 func (s *Store) GetWebhookByName(name string) (*Webhook, error) {
 	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks WHERE name = ?`
-	var w Webhook
-	var tokenHash sql.NullString
-	err := s.db.QueryRow(query, name).Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt)
+	w, err := scanWebhook(s.db.QueryRow(query, name))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if tokenHash.Valid {
-		w.TokenHash = &tokenHash.String
-		w.HasToken = true
-	}
-	return &w, nil
+	return w, nil
 }
 
 // GetWebhookByHash retrieves a webhook by its topic hash (for ingestion).
 func (s *Store) GetWebhookByHash(hash string) (*Webhook, error) {
 	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks WHERE topic_hash = ?`
-	var w Webhook
-	var tokenHash sql.NullString
-	err := s.db.QueryRow(query, hash).Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt)
+	w, err := scanWebhook(s.db.QueryRow(query, hash))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if tokenHash.Valid {
-		w.TokenHash = &tokenHash.String
-		w.HasToken = true
-	}
-	return &w, nil
+	return w, nil
 }
 
 // ListWebhooks returns all webhooks.
@@ -333,16 +338,11 @@ func (s *Store) ListWebhooks() ([]Webhook, error) {
 
 	var webhooks []Webhook
 	for rows.Next() {
-		var w Webhook
-		var tokenHash sql.NullString
-		if err := rows.Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt); err != nil {
+		w, err := scanWebhook(rows)
+		if err != nil {
 			return nil, err
 		}
-		if tokenHash.Valid {
-			w.TokenHash = &tokenHash.String
-			w.HasToken = true
-		}
-		webhooks = append(webhooks, w)
+		webhooks = append(webhooks, *w)
 	}
 	return webhooks, nil
 }
@@ -391,20 +391,14 @@ func (s *Store) ClearWebhookToken(id int64) error {
 // GetWebhookByID retrieves a webhook by its ID.
 func (s *Store) GetWebhookByID(id int64) (*Webhook, error) {
 	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks WHERE id = ?`
-	var w Webhook
-	var tokenHash sql.NullString
-	err := s.db.QueryRow(query, id).Scan(&w.ID, &w.Name, &w.TopicID, &w.TopicHash, &tokenHash, &w.CreatedAt)
+	w, err := scanWebhook(s.db.QueryRow(query, id))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if tokenHash.Valid {
-		w.TokenHash = &tokenHash.String
-		w.HasToken = true
-	}
-	return &w, nil
+	return w, nil
 }
 
 // Consumer Methods
