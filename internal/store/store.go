@@ -130,23 +130,6 @@ func (s *Store) init() error {
 		}
 	}
 
-	// Run migrations for existing databases
-	if err := s.migrate(); err != nil {
-		return fmt.Errorf("failed to run migrations: %w", err)
-	}
-
-	return nil
-}
-
-// migrate handles database migrations for existing databases.
-func (s *Store) migrate() error {
-	// Migration: Add token_hash column to webhooks if it doesn't exist
-	// This is safe to run multiple times (SQLite ignores duplicate column adds)
-	_, err := s.db.Exec(`ALTER TABLE webhooks ADD COLUMN token_hash TEXT DEFAULT NULL`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		// Ignore "duplicate column" error, it means migration already ran
-		return nil
-	}
 	return nil
 }
 
