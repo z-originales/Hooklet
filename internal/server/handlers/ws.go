@@ -29,6 +29,15 @@ func NewWSHandler(mq *queue.Client, db *store.Store, trackTopic func(string)) *W
 	return &WSHandler{mq: mq, db: db, track: trackTopic}
 }
 
+// extractBearerToken extracts the token from "Authorization: Bearer <token>" header.
+func extractBearerToken(r *http.Request) string {
+	header := r.Header.Get(api.HeaderAuthorization)
+	if strings.HasPrefix(header, api.BearerPrefix) {
+		return strings.TrimPrefix(header, api.BearerPrefix)
+	}
+	return ""
+}
+
 // Subscribe handles GET /ws?topics=t1,t2 and /ws/{topic}.
 func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	const writeTimeout = 10 * time.Second
@@ -56,8 +65,32 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Accept WebSocket connection FIRST, then authenticate via message
-	// This prevents token from appearing in URL/logs
+	var consumer *store.Consumer
+	var isAdminBypass bool
+
+	// 1. Check admin bypass (CLI via Unix socket)
+	if auth.IsAdminBypass(r.Context()) {
+		consumer = &store.Consumer{ID: 0, Name: "admin-cli"}
+		isAdminBypass = true
+		log.Debug("WebSocket admin bypass active")
+	} else if token := extractBearerToken(r); token != "" {
+		// 2. Header-based auth: validate BEFORE upgrading WebSocket
+		var err error
+		consumer, err = h.db.GetConsumerByToken(token)
+		if err != nil {
+			log.Error("Failed to validate bearer token", "error", err)
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
+		if consumer == nil {
+			log.Warn("WebSocket rejected: invalid bearer token", "remote", r.RemoteAddr)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		log.Debug("WebSocket pre-authenticated via header", "consumer", consumer.Name)
+	}
+
+	// Accept WebSocket connection
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true, // Allow all origins for POC
 	})
@@ -66,25 +99,11 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set a deadline for authentication
-	authCtx, authCancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer authCancel()
+	// 3. If not yet authenticated, wait for auth message (fallback for browser clients)
+	if consumer == nil {
+		authCtx, authCancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer authCancel()
 
-	var consumer *store.Consumer
-	var isAdminBypass bool
-
-	// Check if this is a trusted admin connection (CLI via Unix socket)
-	if auth.IsAdminBypass(r.Context()) {
-		// Create a synthetic admin consumer for tracking (has access to all topics)
-		consumer = &store.Consumer{
-			ID:   0,
-			Name: "admin-cli",
-		}
-		isAdminBypass = true
-		log.Debug("WebSocket admin bypass active")
-	} else {
-		// Standard Auth: Wait for auth message from client
-		// Client must send: {"type":"auth","token":"..."}
 		_, authMsg, err := conn.Read(authCtx)
 		if err != nil {
 			log.Warn("WebSocket auth timeout or read error", "remote", r.RemoteAddr, "error", err)
@@ -102,7 +121,6 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Validate Token against DB
 		consumer, err = h.db.GetConsumerByToken(authReq.Token)
 		if err != nil {
 			log.Error("Failed to validate token", "error", err)
