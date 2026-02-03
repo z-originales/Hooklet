@@ -17,6 +17,14 @@ func WriteJSON(w http.ResponseWriter, data any) {
 	}
 }
 
+// WriteJSONSensitive sends a JSON response with no-cache headers.
+// Use this for responses containing sensitive data like tokens.
+func WriteJSONSensitive(w http.ResponseWriter, data any) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+	w.Header().Set("Pragma", "no-cache")
+	WriteJSON(w, data)
+}
+
 // WriteError sends a JSON error response.
 func WriteError(w http.ResponseWriter, message string, status int) {
 	w.Header().Set("Content-Type", "application/json")
