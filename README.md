@@ -80,11 +80,14 @@ Stream:   ... webhooks arrive here ...
 <summary><b>Go</b></summary>
 
 ```go
-conn, _, _ := websocket.Dial(ctx, "ws://localhost:8080/ws?topics=stripe-payments", nil)
-defer conn.Close(websocket.StatusNormalClosure, "")
+// Recommended: Auth via header
+headers := http.Header{}
+headers.Set("Authorization", "Bearer my-app-xxx")
 
-// Auth via message (not URL — prevents log leakage)
-conn.Write(ctx, websocket.MessageText, []byte(`{"type":"auth","token":"my-app-xxx"}`))
+conn, _, _ := websocket.Dial(ctx, "wss://hooklet.example.com/ws?topics=stripe-payments", &websocket.DialOptions{
+    HTTPHeader: headers,
+})
+defer conn.Close(websocket.StatusNormalClosure, "")
 
 for {
     _, msg, _ := conn.Read(ctx)
@@ -97,10 +100,18 @@ for {
 <summary><b>Python</b></summary>
 
 ```python
-async with websockets.connect("ws://localhost:8080/ws?topics=stripe-payments") as ws:
-    await ws.send(json.dumps({"type": "auth", "token": "my-app-xxx"}))
-    async for message in ws:
-        print(f"Webhook: {message}")
+import websockets
+import asyncio
+
+async def listen():
+    async with websockets.connect(
+        "wss://hooklet.example.com/ws?topics=stripe-payments",
+        extra_headers={"Authorization": "Bearer my-app-xxx"}
+    ) as ws:
+        async for message in ws:
+            print(f"Webhook: {message}")
+
+asyncio.run(listen())
 ```
 </details>
 
@@ -108,18 +119,34 @@ async with websockets.connect("ws://localhost:8080/ws?topics=stripe-payments") a
 <summary><b>Node.js</b></summary>
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8080/ws?topics=stripe-payments');
-ws.on('open', () => ws.send(JSON.stringify({type: 'auth', token: 'my-app-xxx'})));
+const WebSocket = require('ws');
+
+const ws = new WebSocket('wss://hooklet.example.com/ws?topics=stripe-payments', {
+    headers: { 'Authorization': 'Bearer my-app-xxx' }
+});
+
 ws.on('message', (data) => console.log('Webhook:', JSON.parse(data)));
 ```
+
+> Note: Browser WebSocket API doesn't support custom headers. Use message-based auth instead:
+> ```javascript
+> const ws = new WebSocket('wss://hooklet.example.com/ws?topics=stripe-payments');
+> ws.onopen = () => ws.send(JSON.stringify({type: 'auth', token: 'my-app-xxx'}));
+> ```
 </details>
 
 <details>
 <summary><b>Rust</b></summary>
 
 ```rust
-let (mut ws, _) = connect_async("ws://localhost:8080/ws?topics=stripe-payments").await?;
-ws.send(Message::Text(r#"{"type":"auth","token":"my-app-xxx"}"#.into())).await?;
+use tokio_tungstenite::{connect_async, tungstenite::http::Request};
+
+let request = Request::builder()
+    .uri("wss://hooklet.example.com/ws?topics=stripe-payments")
+    .header("Authorization", "Bearer my-app-xxx")
+    .body(())?;
+
+let (mut ws, _) = connect_async(request).await?;
 while let Some(Ok(Message::Text(msg))) = ws.next().await {
     println!("Webhook: {}", msg);
 }
@@ -233,3 +260,114 @@ flowchart LR
 - **Stored hashed** — Tokens stored as SHA256, never in plaintext
 - **Strict registration** — Only pre-registered webhooks accept data (404 otherwise)
 - **Unix socket admin** — Local CLI has implicit trust, remote requires token
+
+### WebSocket Authentication
+
+Two methods are supported for WebSocket authentication:
+
+**1. Header-based (recommended for backends)**
+```go
+// Go
+headers := http.Header{}
+headers.Set("Authorization", "Bearer <token>")
+conn, _, _ := websocket.Dial(ctx, "wss://example.com/ws?topics=orders", &websocket.DialOptions{
+    HTTPHeader: headers,
+})
+```
+
+```python
+# Python
+import websockets
+async with websockets.connect(
+    "wss://example.com/ws?topics=orders",
+    extra_headers={"Authorization": "Bearer <token>"}
+) as ws:
+    ...
+```
+
+**2. Message-based (fallback for browsers)**
+```javascript
+const ws = new WebSocket("wss://example.com/ws?topics=orders");
+ws.onopen = () => ws.send(JSON.stringify({type: "auth", token: "<token>"}));
+```
+
+> Header-based auth rejects invalid tokens with HTTP 401 **before** upgrading to WebSocket, saving server resources.
+
+---
+
+## Production Checklist
+
+Before deploying Hooklet to production, ensure you follow these security practices:
+
+### Always Use TLS (WSS/HTTPS)
+
+**Never use unencrypted connections in production.**
+
+```
+ws://  -> wss://
+http:// -> https://
+```
+
+With TLS enabled:
+- All headers (including `Authorization`) are encrypted in transit
+- Tokens cannot be intercepted by network observers
+- Use a reverse proxy (Nginx, Traefik, Caddy) for TLS termination
+
+```nginx
+# Nginx example
+server {
+    listen 443 ssl;
+    server_name hooklet.example.com;
+    
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+    
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+}
+```
+
+### Configure Proxy Logging
+
+**Do not log the `Authorization` header.** Configure your reverse proxy to exclude sensitive headers from access logs:
+
+```nginx
+# Nginx: custom log format WITHOUT Authorization header
+log_format hooklet_safe '$remote_addr - $remote_user [$time_local] '
+                        '"$request" $status $body_bytes_sent '
+                        '"$http_referer" "$http_user_agent"';
+
+access_log /var/log/nginx/hooklet.log hooklet_safe;
+```
+
+```yaml
+# Traefik: redact Authorization header
+accessLog:
+  filePath: "/var/log/traefik/access.log"
+  fields:
+    headers:
+      names:
+        Authorization: redact
+```
+
+### Protect Tokens Client-Side
+
+Tokens are stored in plaintext on the client (this is normal for all token-based auth). Ensure proper handling:
+
+- **Never commit tokens** to version control
+- **Use environment variables** or secret managers (Vault, AWS Secrets Manager)
+- **Restrict file permissions** on config files: `chmod 600 config.yaml`
+- **Rotate tokens** periodically using `hooklet-cli consumer regen-token <id>`
+
+### Set Admin Token
+
+Always set `HOOKLET_ADMIN_TOKEN` in production to protect admin endpoints:
+
+```bash
+export HOOKLET_ADMIN_TOKEN=$(openssl rand -hex 32)
+```
