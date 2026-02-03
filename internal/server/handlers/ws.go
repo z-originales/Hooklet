@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +18,17 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/coder/websocket"
 )
+
+// generateConnectionID creates a random 8-character hex string for unique queue naming.
+// This ensures each WebSocket connection gets its own RabbitMQ queue (fan-out behavior).
+func generateConnectionID() string {
+	b := make([]byte, 4) // 4 bytes = 8 hex characters
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if crypto/rand fails (extremely unlikely)
+		return fmt.Sprintf("%08x", time.Now().UnixNano()&0xFFFFFFFF)
+	}
+	return hex.EncodeToString(b)
+}
 
 // WSHandler upgrades to WebSocket and streams messages from RabbitMQ.
 type WSHandler struct {
@@ -164,8 +177,10 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	ackCancel()
 
-	// Consumer ID is now the Consumer ID / Name to ensure tracking
-	consumerID := fmt.Sprintf("%s-%d", consumer.Name, consumer.ID)
+	// Consumer ID includes a unique connection ID to ensure each WebSocket gets its own queue
+	// This enables fan-out behavior: all connections receive all messages (no round-robin)
+	connectionID := generateConnectionID()
+	consumerID := fmt.Sprintf("%s-%d-%s", consumer.Name, consumer.ID, connectionID)
 
 	log.Info("WebSocket client authenticated", "consumer_id", consumerID, "topics", topics, "remote", r.RemoteAddr)
 
