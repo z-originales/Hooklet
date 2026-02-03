@@ -86,7 +86,7 @@ func (h *AdminHandler) Webhooks(w http.ResponseWriter, r *http.Request) {
 				Webhook: wh,
 				Token:   token,
 			}
-			httpresponse.WriteJSON(w, resp)
+			httpresponse.WriteJSONSensitive(w, resp)
 		} else {
 			httpresponse.WriteJSON(w, wh)
 		}
@@ -171,7 +171,7 @@ func (h *AdminHandler) WebhookByID(w http.ResponseWriter, r *http.Request) {
 			Name:  wh.Name,
 			Token: token,
 		}
-		httpresponse.WriteJSON(w, resp)
+		httpresponse.WriteJSONSensitive(w, resp)
 
 	case "clear-token": // POST /admin/webhooks/{id}/clear-token
 		if r.Method != http.MethodPost {
@@ -265,7 +265,7 @@ func (h *AdminHandler) Consumers(w http.ResponseWriter, r *http.Request) {
 			Consumer: consumer,
 			Token:    token,
 		}
-		httpresponse.WriteJSON(w, resp)
+		httpresponse.WriteJSONSensitive(w, resp)
 
 	default:
 		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -350,7 +350,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 				httpresponse.WriteError(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
-			httpresponse.WriteJSON(w, map[string]string{"token": newToken})
+			httpresponse.WriteJSONSensitive(w, map[string]string{"token": newToken})
 			return
 		}
 
