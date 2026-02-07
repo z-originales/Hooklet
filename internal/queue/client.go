@@ -22,10 +22,11 @@ type Client struct {
 	url string
 	cfg Config
 
-	mu      sync.RWMutex
-	conn    *amqp.Connection
-	channel *amqp.Channel
-	closed  bool
+	mu        sync.RWMutex
+	conn      *amqp.Connection
+	channel   *amqp.Channel
+	closed    bool
+	publishMu sync.Mutex
 
 	notifyClose chan *amqp.Error
 }
@@ -166,6 +167,9 @@ func (c *Client) Close() error {
 // Publish sends a message to the topic exchange.
 // Messages are persistent and will survive RabbitMQ restarts (until TTL expires).
 func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
+	c.publishMu.Lock()
+	defer c.publishMu.Unlock()
+
 	c.mu.RLock()
 	ch := c.channel
 	c.mu.RUnlock()
@@ -285,8 +289,5 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 // Hooklet: "*" matches one level, "**" matches all levels.
 // AMQP: "*" matches one word, "#" matches zero or more words.
 func normalizeTopicPattern(topic string) string {
-	pattern := strings.ReplaceAll(topic, "**", "#")
-	pattern = strings.ReplaceAll(pattern, "#.", "#")
-	pattern = strings.ReplaceAll(pattern, ".#", "#")
-	return pattern
+	return strings.ReplaceAll(topic, "**", "#")
 }
