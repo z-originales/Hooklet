@@ -47,6 +47,10 @@ func (s *Server) Start() error {
 	// Setup router
 	mux := s.newRouter()
 
+	if s.cfg.AdminToken == "" && s.cfg.AdminDebug {
+		log.Warn("Admin auth is disabled in debug mode", "note", "set HOOKLET_ADMIN_TOKEN or disable HOOKLET_ADMIN_DEBUG")
+	}
+
 	// Create listener for public TCP traffic
 	addr := ":" + s.cfg.Port
 	tcpListener, err := net.Listen("tcp", addr)
@@ -71,14 +75,33 @@ func (s *Server) Start() error {
 	}
 
 	// Create HTTP servers
-	s.tcpServer = &http.Server{Handler: middlewareSource("api", mux)}
+	serverTimeouts := http.Server{
+		ReadTimeout:       time.Duration(s.cfg.HTTPReadTimeoutSeconds) * time.Second,
+		WriteTimeout:      time.Duration(s.cfg.HTTPWriteTimeoutSeconds) * time.Second,
+		IdleTimeout:       time.Duration(s.cfg.HTTPIdleTimeoutSeconds) * time.Second,
+		ReadHeaderTimeout: time.Duration(s.cfg.HTTPReadHeaderTimeoutSeconds) * time.Second,
+	}
+
+	s.tcpServer = &http.Server{
+		Handler:           middlewareSource("api", mux),
+		ReadTimeout:       serverTimeouts.ReadTimeout,
+		WriteTimeout:      serverTimeouts.WriteTimeout,
+		IdleTimeout:       serverTimeouts.IdleTimeout,
+		ReadHeaderTimeout: serverTimeouts.ReadHeaderTimeout,
+	}
 
 	// Unix socket server uses a special handler that injects admin bypass context
 	trustedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := auth.WithAdminBypass(r.Context())
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	})
-	s.unixServer = &http.Server{Handler: middlewareSource("unix", trustedHandler)}
+	s.unixServer = &http.Server{
+		Handler:           middlewareSource("unix", trustedHandler),
+		ReadTimeout:       serverTimeouts.ReadTimeout,
+		WriteTimeout:      serverTimeouts.WriteTimeout,
+		IdleTimeout:       serverTimeouts.IdleTimeout,
+		ReadHeaderTimeout: serverTimeouts.ReadHeaderTimeout,
+	}
 
 	// Start TCP server
 	go func() {
