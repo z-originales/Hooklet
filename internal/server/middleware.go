@@ -34,9 +34,13 @@ func (s *Server) adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// Use config instead of os.Getenv directly
 		expected := s.cfg.AdminToken
 
-		// If no auth is configured, allow everyone (dev mode / insecure)
-		if expected == "" {
+		// If no auth is configured, allow everyone only in debug mode
+		if expected == "" && s.cfg.AdminDebug {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if expected == "" {
+			httpresponse.WriteError(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
