@@ -13,8 +13,8 @@ func (s *Server) newRouter() *http.ServeMux {
 
 	adminHandler := handlers.NewAdminHandler(s.db)
 	publicHandler := handlers.NewPublicHandler(s.listTopics, s.startedAt, s.rabbitConnected)
-	webhookHandler := handlers.NewWebhookHandler(s.mq, s.db, s.trackTopic)
-	wsHandler := handlers.NewWSHandler(s.mq, s.db, s.trackTopic)
+	webhookHandler := handlers.NewWebhookHandler(s.mq, s.db, s.trackTopic, s.cfg.MaxBodyBytes)
+	wsHandler := handlers.NewWSHandler(s.mq, s.db, s.trackTopic, s.cfg)
 
 	// Public Routes
 	mux.HandleFunc(api.RouteStatus, publicHandler.Status)

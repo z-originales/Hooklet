@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -17,14 +18,15 @@ import (
 
 // WebhookHandler receives POST requests and publishes to RabbitMQ.
 type WebhookHandler struct {
-	mq    *queue.Client
-	db    *store.Store
-	track func(string)
+	mq           *queue.Client
+	db           *store.Store
+	track        func(string)
+	maxBodyBytes int64
 }
 
 // NewWebhookHandler creates a handler for webhook ingestion.
-func NewWebhookHandler(mq *queue.Client, db *store.Store, trackTopic func(string)) *WebhookHandler {
-	return &WebhookHandler{mq: mq, db: db, track: trackTopic}
+func NewWebhookHandler(mq *queue.Client, db *store.Store, trackTopic func(string), maxBodyBytes int64) *WebhookHandler {
+	return &WebhookHandler{mq: mq, db: db, track: trackTopic, maxBodyBytes: maxBodyBytes}
 }
 
 // Publish handles POST /webhook/{topic}.
@@ -32,6 +34,10 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	if h.maxBodyBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, h.maxBodyBytes)
 	}
 
 	// Extract webhook hash from path: /webhook/{hash}
@@ -77,6 +83,11 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			httpresponse.WriteError(w, "Payload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		log.Error("Failed to read body", "error", err)
 		httpresponse.WriteError(w, "Failed to read body", http.StatusInternalServerError)
 		return
