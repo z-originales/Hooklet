@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"hooklet/internal/api"
+	"hooklet/internal/config"
 	"hooklet/internal/queue"
 	"hooklet/internal/server/auth"
 	"hooklet/internal/store"
@@ -35,11 +36,12 @@ type WSHandler struct {
 	mq    *queue.Client
 	db    *store.Store
 	track func(string)
+	cfg   config.Config
 }
 
 // NewWSHandler creates a handler for WebSocket streaming.
-func NewWSHandler(mq *queue.Client, db *store.Store, trackTopic func(string)) *WSHandler {
-	return &WSHandler{mq: mq, db: db, track: trackTopic}
+func NewWSHandler(mq *queue.Client, db *store.Store, trackTopic func(string), cfg config.Config) *WSHandler {
+	return &WSHandler{mq: mq, db: db, track: trackTopic, cfg: cfg}
 }
 
 // extractBearerToken extracts the token from "Authorization: Bearer <token>" header.
@@ -53,15 +55,16 @@ func extractBearerToken(r *http.Request) string {
 
 // Subscribe handles GET /ws?topics=t1,t2 and /ws/{topic}.
 func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
-	const writeTimeout = 10 * time.Second
+	writeTimeout := time.Duration(h.cfg.WSWriteTimeoutSeconds) * time.Second
+	authTimeout := time.Duration(h.cfg.WSAuthTimeoutSeconds) * time.Second
 
 	// Parse topics from URL query params
-	var topics []string
-	if t := r.URL.Query().Get(api.QueryParamTopics); t != "" {
-		for _, name := range strings.Split(t, ",") {
+	requested := make([]string, 0)
+	if queryTopics := r.URL.Query().Get(api.QueryParamTopics); queryTopics != "" {
+		for _, name := range strings.Split(queryTopics, ",") {
 			name = strings.TrimSpace(name)
 			if name != "" {
-				topics = append(topics, name)
+				requested = append(requested, name)
 			}
 		}
 	}
@@ -70,12 +73,23 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	// /ws/{topic}
 	pathTopic := strings.TrimPrefix(r.URL.Path, api.RouteSubscribe)
 	if pathTopic != "" && pathTopic != "/" {
-		topics = append(topics, pathTopic)
+		requested = append(requested, pathTopic)
 	}
 
-	if len(topics) == 0 {
+	if len(requested) == 0 {
 		http.Error(w, "No topics specified", http.StatusBadRequest)
 		return
+	}
+
+	// Deduplicate topics
+	topicSet := make(map[string]struct{}, len(requested))
+	var topics []string
+	for _, topic := range requested {
+		if _, exists := topicSet[topic]; exists {
+			continue
+		}
+		topicSet[topic] = struct{}{}
+		topics = append(topics, topic)
 	}
 
 	var consumer *store.Consumer
@@ -104,9 +118,13 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Accept WebSocket connection
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // Allow all origins for POC
-	})
+	acceptOpts := &websocket.AcceptOptions{InsecureSkipVerify: true}
+	if len(h.cfg.WSAllowedOrigins) > 0 {
+		acceptOpts.OriginPatterns = h.cfg.WSAllowedOrigins
+		acceptOpts.InsecureSkipVerify = false
+	}
+
+	conn, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		log.Error("Failed to accept websocket", "error", err)
 		return
@@ -114,13 +132,19 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 
 	// 3. If not yet authenticated, wait for auth message (fallback for browser clients)
 	if consumer == nil {
-		authCtx, authCancel := context.WithTimeout(r.Context(), 10*time.Second)
+		authCtx, authCancel := context.WithTimeout(r.Context(), authTimeout)
 		defer authCancel()
 
 		_, authMsg, err := conn.Read(authCtx)
 		if err != nil {
 			log.Warn("WebSocket auth timeout or read error", "remote", r.RemoteAddr, "error", err)
 			conn.Close(websocket.StatusPolicyViolation, "Authentication timeout")
+			return
+		}
+
+		if h.cfg.WSAuthMaxBytes > 0 && int64(len(authMsg)) > h.cfg.WSAuthMaxBytes {
+			log.Warn("WebSocket auth message too large", "remote", r.RemoteAddr, "size", len(authMsg))
+			conn.Close(websocket.StatusPolicyViolation, "Auth message too large")
 			return
 		}
 
@@ -150,16 +174,27 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	// Authorization Check (Subscriptions)
 	// Admin bypass has access to everything, regular consumers need explicit permission
 	if !isAdminBypass {
-		for _, t := range topics {
-			allowed, err := h.db.ConsumerCanAccess(consumer.ID, t)
-			if err != nil {
-				log.Error("Failed to check consumer access", "error", err)
-				conn.Close(websocket.StatusInternalError, "Internal error")
-				return
+		subs, err := h.db.GetConsumerSubscriptions(consumer.ID)
+		if err != nil {
+			log.Error("Failed to load consumer subscriptions", "error", err)
+			conn.Close(websocket.StatusInternalError, "Internal error")
+			return
+		}
+		for _, topic := range topics {
+			allowed := false
+			for _, sub := range subs {
+				if topic == sub.Name {
+					allowed = true
+					break
+				}
+				if !strings.Contains(topic, "*") && store.MatchTopic(sub.Name, topic) {
+					allowed = true
+					break
+				}
 			}
 			if !allowed {
-				log.Warn("Consumer tried to subscribe to unauthorized topic", "consumer", consumer.Name, "topic", t)
-				conn.Close(websocket.StatusPolicyViolation, "Unauthorized topic: "+t)
+				log.Warn("Consumer tried to subscribe to unauthorized topic", "consumer", consumer.Name, "topic", topic)
+				conn.Close(websocket.StatusPolicyViolation, "Unauthorized topic: "+topic)
 				return
 			}
 		}
