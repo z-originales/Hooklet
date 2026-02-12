@@ -513,10 +513,24 @@ func (s *Store) RegenerateConsumerToken(id int64, newTokenHash string) error {
 // Subscription Methods
 
 // Subscribe adds a subscription for a consumer to a topic.
-// If the topic doesn't exist, it will be created (allows pattern subscriptions).
+// If the topic doesn't exist:
+// - If it's a pattern (e.g. "orders.*"), it will be created implicitly.
+// - If it's an exact topic (e.g. "orders.created"), it MUST exist (created via webhook) or an error is returned.
 func (s *Store) Subscribe(consumerID int64, topicName string) error {
-	// Get or create the topic
-	topic, err := s.GetOrCreateTopic(topicName)
+	var topic *Topic
+	var err error
+
+	if isPattern(topicName) {
+		// Patterns can be created on the fly
+		topic, err = s.GetOrCreateTopic(topicName)
+	} else {
+		// Exact topics must already exist (registered webhooks)
+		topic, err = s.GetTopicByName(topicName)
+		if err == nil && topic == nil {
+			return fmt.Errorf("topic %q not found (exact topics must be registered first)", topicName)
+		}
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to get/create topic: %w", err)
 	}
@@ -587,7 +601,7 @@ func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) er
 	}
 	defer tx.Rollback()
 
-	getOrCreateTopic := func(name string) (*Topic, error) {
+	getTopic := func(name string) (*Topic, error) {
 		var t Topic
 		row := tx.QueryRow(`SELECT id, name, is_pattern, created_at FROM topics WHERE name = ?`, name)
 		err := row.Scan(&t.ID, &t.Name, &t.IsPattern, &t.CreatedAt)
@@ -598,7 +612,13 @@ func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) er
 			return nil, err
 		}
 
+		// Topic not found
 		pattern := isPattern(name)
+		if !pattern {
+			return nil, fmt.Errorf("topic %q not found (exact topics must be registered first)", name)
+		}
+
+		// Create pattern topic
 		res, err := tx.Exec(`INSERT INTO topics (name, is_pattern, created_at) VALUES (?, ?, ?)`,
 			name, pattern, time.Now())
 		if err != nil {
@@ -624,7 +644,7 @@ func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) er
 				continue
 			}
 
-			topic, err := getOrCreateTopic(name)
+			topic, err := getTopic(name)
 			if err != nil {
 				return err
 			}
