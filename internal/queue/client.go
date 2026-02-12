@@ -22,11 +22,10 @@ type Client struct {
 	url string
 	cfg Config
 
-	mu        sync.RWMutex
-	conn      *amqp.Connection
-	channel   *amqp.Channel
-	closed    bool
-	publishMu sync.Mutex
+	mu      sync.RWMutex
+	conn    *amqp.Connection
+	channel *amqp.Channel
+	closed  bool
 
 	notifyClose chan *amqp.Error
 }
@@ -167,9 +166,6 @@ func (c *Client) Close() error {
 // Publish sends a message to the topic exchange.
 // Messages are persistent and will survive RabbitMQ restarts (until TTL expires).
 func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
-	c.publishMu.Lock()
-	defer c.publishMu.Unlock()
-
 	c.mu.RLock()
 	ch := c.channel
 	c.mu.RUnlock()
