@@ -135,16 +135,15 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		authCtx, authCancel := context.WithTimeout(r.Context(), authTimeout)
 		defer authCancel()
 
+		// Limit auth message size to prevent OOM DOS
+		if h.cfg.WSAuthMaxBytes > 0 {
+			conn.SetReadLimit(h.cfg.WSAuthMaxBytes)
+		}
+
 		_, authMsg, err := conn.Read(authCtx)
 		if err != nil {
 			log.Warn("WebSocket auth timeout or read error", "remote", r.RemoteAddr, "error", err)
 			conn.Close(websocket.StatusPolicyViolation, "Authentication timeout")
-			return
-		}
-
-		if h.cfg.WSAuthMaxBytes > 0 && int64(len(authMsg)) > h.cfg.WSAuthMaxBytes {
-			log.Warn("WebSocket auth message too large", "remote", r.RemoteAddr, "size", len(authMsg))
-			conn.Close(websocket.StatusPolicyViolation, "Auth message too large")
 			return
 		}
 
