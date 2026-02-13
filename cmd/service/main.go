@@ -20,6 +20,13 @@ func main() {
 	// Load configuration from environment
 	cfg := config.Load()
 
+	// Configure log level
+	if level, err := log.ParseLevel(cfg.LogLevel); err == nil {
+		log.SetLevel(level)
+	} else {
+		log.Warn("Invalid log level, using default", "level", cfg.LogLevel)
+	}
+
 	// Build RabbitMQ URL from components (or use full URL if provided)
 	rabbitURL := cfg.RabbitURL
 	if rabbitURL == "" {

@@ -25,6 +25,7 @@ const (
 	DefaultHTTPReadHeaderTimeoutSeconds = 10
 	DefaultWSWriteTimeoutSeconds        = 10
 	DefaultWSAuthTimeoutSeconds         = 10
+	DefaultLogLevel                     = "info"
 )
 
 // Config holds the service configuration.
@@ -50,6 +51,7 @@ type Config struct {
 	WSWriteTimeoutSeconds        int
 	WSAuthTimeoutSeconds         int
 	WSAllowedOrigins             []string
+	LogLevel                     string
 }
 
 // Load reads configuration from environment variables or uses defaults.
@@ -76,6 +78,7 @@ func Load() Config {
 		WSWriteTimeoutSeconds:        getEnvInt("HOOKLET_WS_WRITE_TIMEOUT", DefaultWSWriteTimeoutSeconds),
 		WSAuthTimeoutSeconds:         getEnvInt("HOOKLET_WS_AUTH_TIMEOUT", DefaultWSAuthTimeoutSeconds),
 		WSAllowedOrigins:             getEnvCSV("HOOKLET_WS_ORIGINS"),
+		LogLevel:                     getEnv("HOOKLET_LOG_LEVEL", DefaultLogLevel),
 	}
 }
 
