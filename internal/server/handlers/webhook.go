@@ -100,6 +100,11 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	// Publish to queue using the webhook's original name as routing key
 	// (RabbitMQ routing uses the human-readable name internally)
 	if err := h.mq.Publish(ctx, wh.Name, body); err != nil {
+		if errors.Is(err, queue.ErrNoRoute) {
+			log.Debug("Webhook miss: no consumer queue bound", "topic", wh.Name)
+			httpresponse.WriteError(w, "No active consumer for this webhook", http.StatusServiceUnavailable)
+			return
+		}
 		log.Error("Failed to publish", "topic", wh.Name, "error", err)
 		httpresponse.WriteError(w, "Failed to publish", http.StatusInternalServerError)
 		return
@@ -110,6 +115,7 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 		h.track(wh.Name)
 	}
 
+	log.Debug("Webhook hit: message routed", "topic", wh.Name)
 	log.Info("Webhook received", "topic", wh.Name, "hash", hookHash, "size", len(body))
 	w.WriteHeader(http.StatusAccepted)
 }
