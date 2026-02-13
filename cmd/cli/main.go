@@ -518,6 +518,10 @@ func main() {
 	kctx := kong.Parse(&CLI,
 		kong.Name("hooklet"),
 		kong.Description("CLI client for hooklet webhook service"),
+		kong.ConfigureHelp(kong.HelpOptions{
+			NoExpandSubcommands: true,
+			Compact:             true,
+		}),
 		kong.UsageOnError(),
 	)
 
