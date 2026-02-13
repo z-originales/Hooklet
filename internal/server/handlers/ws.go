@@ -2,46 +2,44 @@ package handlers
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"hooklet/internal/api"
 	"hooklet/internal/config"
 	"hooklet/internal/queue"
-	"hooklet/internal/server/auth"
 	"hooklet/internal/store"
 
 	"github.com/charmbracelet/log"
 	"github.com/coder/websocket"
 )
 
-// generateConnectionID creates a random 8-character hex string for unique queue naming.
-// This ensures each WebSocket connection gets its own RabbitMQ queue (fan-out behavior).
-func generateConnectionID() string {
-	b := make([]byte, 4) // 4 bytes = 8 hex characters
-	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp if crypto/rand fails (extremely unlikely)
-		return fmt.Sprintf("%08x", time.Now().UnixNano()&0xFFFFFFFF)
-	}
-	return hex.EncodeToString(b)
-}
-
 // WSHandler upgrades to WebSocket and streams messages from RabbitMQ.
+// Only one active WebSocket connection per consumer is allowed. If a consumer
+// reconnects, the previous connection is kicked with a close message.
 type WSHandler struct {
 	mq    *queue.Client
 	db    *store.Store
 	track func(string)
 	cfg   config.Config
+
+	mu     sync.Mutex
+	active map[int64]context.CancelFunc // consumer ID -> cancel for active connection
 }
 
 // NewWSHandler creates a handler for WebSocket streaming.
 func NewWSHandler(mq *queue.Client, db *store.Store, trackTopic func(string), cfg config.Config) *WSHandler {
-	return &WSHandler{mq: mq, db: db, track: trackTopic, cfg: cfg}
+	return &WSHandler{
+		mq:     mq,
+		db:     db,
+		track:  trackTopic,
+		cfg:    cfg,
+		active: make(map[int64]context.CancelFunc),
+	}
 }
 
 // extractBearerToken extracts the token from "Authorization: Bearer <token>" header.
@@ -59,6 +57,32 @@ func sendAuthFailed(conn *websocket.Conn, writeTimeout time.Duration, reason str
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	_ = conn.Write(ctx, websocket.MessageText, msg)
 	cancel()
+}
+
+// registerConn registers a consumer's connection, kicking any existing one.
+// Returns a cancel function and a cleanup function to call on disconnect.
+func (h *WSHandler) registerConn(consumerID int64) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	h.mu.Lock()
+	if oldCancel, exists := h.active[consumerID]; exists {
+		oldCancel() // kick the old connection
+		log.Info("Kicked previous connection", "consumer_id", consumerID)
+	}
+	h.active[consumerID] = cancel
+	h.mu.Unlock()
+
+	return ctx, cancel
+}
+
+// unregisterConn removes the consumer from the active map.
+// Only removes if the cancel matches (avoids race with a newer connection).
+func (h *WSHandler) unregisterConn(consumerID int64, cancel context.CancelFunc) {
+	h.mu.Lock()
+	if current, exists := h.active[consumerID]; exists && fmt.Sprintf("%p", current) == fmt.Sprintf("%p", cancel) {
+		delete(h.active, consumerID)
+	}
+	h.mu.Unlock()
 }
 
 // Subscribe handles GET /ws?topics=t1,t2 and /ws/{topic}.
@@ -101,15 +125,9 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var consumer *store.Consumer
-	var isAdminBypass bool
 
-	// 1. Check admin bypass (CLI via Unix socket)
-	if auth.IsAdminBypass(r.Context()) {
-		consumer = &store.Consumer{ID: 0, Name: "admin-cli"}
-		isAdminBypass = true
-		log.Debug("WebSocket admin bypass active")
-	} else if token := extractBearerToken(r); token != "" {
-		// 2. Header-based auth: validate BEFORE upgrading WebSocket
+	// 1. Header-based auth: validate BEFORE upgrading WebSocket
+	if token := extractBearerToken(r); token != "" {
 		var err error
 		consumer, err = h.db.GetConsumerByToken(token)
 		if err != nil {
@@ -138,7 +156,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. If not yet authenticated, wait for auth message (fallback for browser clients)
+	// 2. If not yet authenticated, wait for auth message (fallback for browser clients)
 	if consumer == nil {
 		authCtx, authCancel := context.WithTimeout(r.Context(), authTimeout)
 		defer authCancel()
@@ -183,32 +201,29 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authorization Check (Subscriptions)
-	// Admin bypass has access to everything, regular consumers need explicit permission
-	if !isAdminBypass {
-		subs, err := h.db.GetConsumerSubscriptions(consumer.ID)
-		if err != nil {
-			log.Error("Failed to load consumer subscriptions", "error", err)
-			conn.Close(websocket.StatusInternalError, "Internal error")
-			return
+	subs, err := h.db.GetConsumerSubscriptions(consumer.ID)
+	if err != nil {
+		log.Error("Failed to load consumer subscriptions", "error", err)
+		conn.Close(websocket.StatusInternalError, "Internal error")
+		return
+	}
+	for _, topic := range topics {
+		allowed := false
+		for _, sub := range subs {
+			if topic == sub.Name {
+				allowed = true
+				break
+			}
+			if !strings.Contains(topic, "*") && store.MatchTopic(sub.Name, topic) {
+				allowed = true
+				break
+			}
 		}
-		for _, topic := range topics {
-			allowed := false
-			for _, sub := range subs {
-				if topic == sub.Name {
-					allowed = true
-					break
-				}
-				if !strings.Contains(topic, "*") && store.MatchTopic(sub.Name, topic) {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				log.Warn("Consumer tried to subscribe to unauthorized topic", "consumer", consumer.Name, "topic", topic)
-				sendAuthFailed(conn, writeTimeout, "unauthorized topic: "+topic)
-				conn.Close(websocket.StatusPolicyViolation, "Unauthorized topic: "+topic)
-				return
-			}
+		if !allowed {
+			log.Warn("Consumer tried to subscribe to unauthorized topic", "consumer", consumer.Name, "topic", topic)
+			sendAuthFailed(conn, writeTimeout, "unauthorized topic: "+topic)
+			conn.Close(websocket.StatusPolicyViolation, "Unauthorized topic: "+topic)
+			return
 		}
 	}
 
@@ -229,12 +244,15 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	ackCancel()
 
-	// Consumer ID includes a unique connection ID to ensure each WebSocket gets its own queue
-	// This enables fan-out behavior: all connections receive all messages (no round-robin)
-	connectionID := generateConnectionID()
-	consumerID := fmt.Sprintf("%s-%d-%s", consumer.Name, consumer.ID, connectionID)
+	// Register this connection, kicking any previous one for the same consumer
+	connCtx, connCancel := h.registerConn(consumer.ID)
+	defer h.unregisterConn(consumer.ID, connCancel)
+	defer connCancel()
 
-	log.Info("WebSocket client authenticated", "consumer_id", consumerID, "topics", topics, "remote", r.RemoteAddr)
+	// Stable queue name per consumer (no random suffix)
+	consumerTag := fmt.Sprintf("%s-%d", consumer.Name, consumer.ID)
+
+	log.Info("WebSocket client connected", "consumer", consumer.Name, "consumer_id", consumer.ID, "topics", topics, "remote", r.RemoteAddr)
 
 	// Track topics
 	if h.track != nil {
@@ -244,31 +262,34 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Subscribe to queue with specific topics
-	msgs, err := h.mq.Subscribe(r.Context(), consumerID, topics)
+	msgs, err := h.mq.Subscribe(connCtx, consumerTag, topics)
 	if err != nil {
-		log.Error("Failed to subscribe", "consumer_id", consumerID, "error", err)
+		log.Error("Failed to subscribe", "consumer", consumer.Name, "error", err)
 		conn.Close(websocket.StatusInternalError, "Failed to subscribe")
 		return
 	}
 
-	// Stream messages to WebSocket
-	ctx := r.Context()
+	// Stream messages directly from RabbitMQ to WebSocket
 	for {
 		select {
-		case <-ctx.Done():
-			log.Info("WebSocket client disconnected", "consumer_id", consumerID)
+		case <-connCtx.Done():
+			log.Info("WebSocket connection ended", "consumer", consumer.Name, "reason", connCtx.Err())
+			conn.Close(websocket.StatusNormalClosure, "Replaced by new connection")
+			return
+		case <-r.Context().Done():
+			log.Info("WebSocket client disconnected", "consumer", consumer.Name)
 			conn.Close(websocket.StatusNormalClosure, "")
 			return
 		case msg, ok := <-msgs:
 			if !ok {
-				log.Info("Queue channel closed", "consumer_id", consumerID)
+				log.Info("Queue channel closed", "consumer", consumer.Name)
 				conn.Close(websocket.StatusNormalClosure, "Queue closed")
 				return
 			}
-			writeCtx, writeCancel := context.WithTimeout(ctx, writeTimeout)
+			writeCtx, writeCancel := context.WithTimeout(connCtx, writeTimeout)
 			if err := conn.Write(writeCtx, websocket.MessageText, msg.Body); err != nil {
 				writeCancel()
-				log.Error("Failed to write to websocket", "error", err)
+				log.Error("Failed to write to websocket", "consumer", consumer.Name, "error", err)
 				conn.Close(websocket.StatusInternalError, "Write failed")
 				return
 			}
@@ -277,7 +298,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 			if err := msg.Ack(false); err != nil {
 				log.Error("Failed to ack message", "error", err)
 			}
-			log.Debug("Message sent to client", "size", len(msg.Body))
+			log.Debug("Message sent to client", "consumer", consumer.Name, "size", len(msg.Body))
 		}
 	}
 }
