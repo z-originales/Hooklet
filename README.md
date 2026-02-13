@@ -245,7 +245,7 @@ flowchart LR
 
     subgraph VPS["☁️ Public VPS"]
         Hooklet[Hooklet Service]
-        RabbitMQ[(RabbitMQ)]
+        RabbitMQ[("RabbitMQ<br/>1 queue per consumer")]
         SQLite[(SQLite)]
     end
 
@@ -255,11 +255,14 @@ flowchart LR
     end
 
     Stripe -->|POST /webhook/hash| Hooklet
-    Hooklet <--> RabbitMQ
+    Hooklet -->|publish| RabbitMQ
+    RabbitMQ -->|consume| Hooklet
     Hooklet <--> SQLite
     Hooklet <-.->|WebSocket| App1
     Hooklet <-.->|WebSocket| App2
 ```
+
+Each consumer gets a **stable RabbitMQ queue** (named `hooklet-ws-<name>-<id>`) that survives disconnections. Messages accumulate while the consumer is offline (up to 5 min TTL) and are delivered on reconnect. Only one WebSocket connection per consumer is allowed -- reconnecting kicks the previous connection.
 
 ---
 
