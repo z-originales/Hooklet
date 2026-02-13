@@ -20,6 +20,16 @@ No inbound ports needed. No ngrok. Just outbound WebSocket connections.
 
 ---
 
+## Retention
+
+Queues are created when a WebSocket consumer connects and authenticates. Messages are retained only when a bound queue exists.
+
+- **No active consumer queue**: the webhook returns **503 Service Unavailable**, signaling the provider to retry later.
+- **Consumer connected then disconnected**: messages accumulate in the durable queue up to `HOOKLET_MESSAGE_TTL` (default 5 min) and are delivered on reconnect.
+- **Unused queues** are automatically deleted after `HOOKLET_QUEUE_EXPIRY` (default 1 hour) with no consumers.
+
+---
+
 ## 🚀 Quick Start
 
 ### Prerequisites
