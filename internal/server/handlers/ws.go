@@ -53,6 +53,14 @@ func extractBearerToken(r *http.Request) string {
 	return ""
 }
 
+// sendAuthFailed writes an auth_failed JSON message to the WebSocket before closing.
+func sendAuthFailed(conn *websocket.Conn, writeTimeout time.Duration, reason string) {
+	msg, _ := json.Marshal(map[string]string{"auth_status": "auth_failed", "reason": reason})
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	_ = conn.Write(ctx, websocket.MessageText, msg)
+	cancel()
+}
+
 // Subscribe handles GET /ws?topics=t1,t2 and /ws/{topic}.
 func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	writeTimeout := time.Duration(h.cfg.WSWriteTimeoutSeconds) * time.Second
@@ -143,6 +151,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		_, authMsg, err := conn.Read(authCtx)
 		if err != nil {
 			log.Warn("WebSocket auth timeout or read error", "remote", r.RemoteAddr, "error", err)
+			sendAuthFailed(conn, writeTimeout, "authentication timeout")
 			conn.Close(websocket.StatusPolicyViolation, "Authentication timeout")
 			return
 		}
@@ -153,6 +162,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.Unmarshal(authMsg, &authReq); err != nil || authReq.Type != "auth" || authReq.Token == "" {
 			log.Warn("WebSocket invalid auth message", "remote", r.RemoteAddr)
+			sendAuthFailed(conn, writeTimeout, "invalid auth message")
 			conn.Close(websocket.StatusPolicyViolation, "Invalid auth message")
 			return
 		}
@@ -160,11 +170,13 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		consumer, err = h.db.GetConsumerByToken(authReq.Token)
 		if err != nil {
 			log.Error("Failed to validate token", "error", err)
+			sendAuthFailed(conn, writeTimeout, "internal error")
 			conn.Close(websocket.StatusInternalError, "Internal error")
 			return
 		}
 		if consumer == nil {
 			log.Warn("WebSocket connection with invalid token", "remote", r.RemoteAddr)
+			sendAuthFailed(conn, writeTimeout, "invalid token")
 			conn.Close(websocket.StatusPolicyViolation, "Invalid token")
 			return
 		}
@@ -193,6 +205,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 			}
 			if !allowed {
 				log.Warn("Consumer tried to subscribe to unauthorized topic", "consumer", consumer.Name, "topic", topic)
+				sendAuthFailed(conn, writeTimeout, "unauthorized topic: "+topic)
 				conn.Close(websocket.StatusPolicyViolation, "Unauthorized topic: "+topic)
 				return
 			}
@@ -200,7 +213,12 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send auth success acknowledgement
-	ack := map[string]string{"type": "auth_ok", "consumer": consumer.Name}
+	ack := map[string]interface{}{
+		"consumer_name":        consumer.Name,
+		"auth_status":          "auth_ok",
+		"queue_lifetime_ms":    h.cfg.QueueExpiry,
+		"message_retention_ms": h.cfg.MessageTTL,
+	}
 	ackBytes, _ := json.Marshal(ack)
 	ackCtx, ackCancel := context.WithTimeout(r.Context(), writeTimeout)
 	if err := conn.Write(ackCtx, websocket.MessageText, ackBytes); err != nil {
