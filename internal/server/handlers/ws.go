@@ -244,7 +244,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Subscribe to queue with specific topics
-	msgs, err := h.mq.Subscribe(consumerID, topics)
+	msgs, err := h.mq.Subscribe(r.Context(), consumerID, topics)
 	if err != nil {
 		log.Error("Failed to subscribe", "consumer_id", consumerID, "error", err)
 		conn.Close(websocket.StatusInternalError, "Failed to subscribe")

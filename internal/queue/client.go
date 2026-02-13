@@ -246,7 +246,8 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 // Subscribe creates a dedicated queue for the consumer and binds it to the requested topics.
 // Queues are durable and will survive RabbitMQ restarts, allowing consumers to
 // reconnect and retrieve messages that arrived while they were offline (within TTL).
-func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Delivery, error) {
+// The caller must cancel the context to stop consuming and release the AMQP channel.
+func (c *Client) Subscribe(ctx context.Context, consumerID string, topics []string) (<-chan amqp.Delivery, error) {
 	c.mu.RLock()
 	conn := c.conn
 	c.mu.RUnlock()
@@ -321,8 +322,20 @@ func (c *Client) Subscribe(consumerID string, topics []string) (<-chan amqp.Deli
 	go func() {
 		defer ch.Close()
 		defer close(out)
-		for msg := range msgs {
-			out <- msg
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-msgs:
+				if !ok {
+					return
+				}
+				select {
+				case out <- msg:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 	}()
 
