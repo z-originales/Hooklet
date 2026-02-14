@@ -288,6 +288,20 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Discard reader: keeps conn.Read() active so coder/websocket can process
+	// incoming close frames. Without this, client-initiated closes are never
+	// acknowledged and the client gets 1006 ABNORMAL_CLOSURE.
+	conn.SetReadLimit(4096) // No client messages expected after auth
+	clientGone := make(chan struct{})
+	go func() {
+		defer close(clientGone)
+		for {
+			if _, _, err := conn.Read(connCtx); err != nil {
+				return
+			}
+		}
+	}()
+
 	// Stream messages directly from RabbitMQ to WebSocket
 	for {
 		select {
@@ -295,9 +309,8 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 			// Connection was kicked by registerConn — WebSocket already closed there
 			log.Info("Connection replaced by new login", "consumer", consumer.Name)
 			return
-		case <-r.Context().Done():
+		case <-clientGone:
 			log.Info("WebSocket client disconnected", "consumer", consumer.Name)
-			conn.Close(websocket.StatusNormalClosure, "")
 			return
 		case msg, ok := <-msgs:
 			if !ok {
@@ -309,7 +322,6 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 			if err := conn.Write(writeCtx, websocket.MessageText, msg.Body); err != nil {
 				writeCancel()
 				log.Error("Failed to write to websocket", "consumer", consumer.Name, "error", err)
-				conn.Close(websocket.StatusInternalError, "Write failed")
 				return
 			}
 			writeCancel()
