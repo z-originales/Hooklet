@@ -178,7 +178,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 
 	// 2. If not yet authenticated, wait for auth message (fallback for browser clients)
 	if consumer == nil {
-		authCtx, authCancel := context.WithTimeout(r.Context(), authTimeout)
+		authCtx, authCancel := context.WithTimeout(context.Background(), authTimeout)
 		defer authCancel()
 
 		// Limit auth message size to prevent OOM DOS
@@ -255,7 +255,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		"message_retention_ms": h.cfg.MessageTTL,
 	}
 	ackBytes, _ := json.Marshal(ack)
-	ackCtx, ackCancel := context.WithTimeout(r.Context(), writeTimeout)
+	ackCtx, ackCancel := context.WithTimeout(context.Background(), writeTimeout)
 	if err := conn.Write(ackCtx, websocket.MessageText, ackBytes); err != nil {
 		ackCancel()
 		log.Error("Failed to send auth ack", "error", err)
