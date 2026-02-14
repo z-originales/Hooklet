@@ -18,6 +18,12 @@ import (
 	"github.com/coder/websocket"
 )
 
+// activeConn tracks an active WebSocket connection for a consumer.
+type activeConn struct {
+	cancel context.CancelFunc
+	conn   *websocket.Conn
+}
+
 // WSHandler upgrades to WebSocket and streams messages from RabbitMQ.
 // Only one active WebSocket connection per consumer is allowed. If a consumer
 // reconnects, the previous connection is kicked with a close message.
@@ -28,7 +34,7 @@ type WSHandler struct {
 	cfg   config.Config
 
 	mu     sync.Mutex
-	active map[int64]context.CancelFunc // consumer ID -> cancel for active connection
+	active map[int64]*activeConn // consumer ID -> active connection
 }
 
 // NewWSHandler creates a handler for WebSocket streaming.
@@ -38,7 +44,7 @@ func NewWSHandler(mq *queue.Client, db *store.Store, trackTopic func(string), cf
 		db:     db,
 		track:  trackTopic,
 		cfg:    cfg,
-		active: make(map[int64]context.CancelFunc),
+		active: make(map[int64]*activeConn),
 	}
 }
 
@@ -60,16 +66,29 @@ func sendAuthFailed(conn *websocket.Conn, writeTimeout time.Duration, reason str
 }
 
 // registerConn registers a consumer's connection, kicking any existing one.
-// Returns a cancel function and a cleanup function to call on disconnect.
-func (h *WSHandler) registerConn(consumerID int64) (context.Context, context.CancelFunc) {
+// If an old connection exists, it sends a kicked notification and close frame
+// before cancelling the context, ensuring the client receives a proper close.
+func (h *WSHandler) registerConn(consumerID int64, conn *websocket.Conn) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
+	writeTimeout := time.Duration(h.cfg.WSWriteTimeoutSeconds) * time.Second
 
 	h.mu.Lock()
-	if oldCancel, exists := h.active[consumerID]; exists {
-		oldCancel() // kick the old connection
+	if old, exists := h.active[consumerID]; exists {
+		// Notify old client before closing (best-effort, like sendAuthFailed)
+		kicked, _ := json.Marshal(map[string]string{"type": "kicked", "reason": "replaced_by_new_connection"})
+		notifyCtx, notifyCancel := context.WithTimeout(context.Background(), writeTimeout)
+		_ = old.conn.Write(notifyCtx, websocket.MessageText, kicked)
+		notifyCancel()
+
+		// Close the old WebSocket with a proper close frame
+		old.conn.Close(websocket.StatusNormalClosure, "Replaced by new connection")
+
+		// Cancel the old Subscribe goroutine
+		old.cancel()
+
 		log.Info("Kicked previous connection", "consumer_id", consumerID)
 	}
-	h.active[consumerID] = cancel
+	h.active[consumerID] = &activeConn{cancel: cancel, conn: conn}
 	h.mu.Unlock()
 
 	return ctx, cancel
@@ -79,7 +98,7 @@ func (h *WSHandler) registerConn(consumerID int64) (context.Context, context.Can
 // Only removes if the cancel matches (avoids race with a newer connection).
 func (h *WSHandler) unregisterConn(consumerID int64, cancel context.CancelFunc) {
 	h.mu.Lock()
-	if current, exists := h.active[consumerID]; exists && fmt.Sprintf("%p", current) == fmt.Sprintf("%p", cancel) {
+	if current, exists := h.active[consumerID]; exists && fmt.Sprintf("%p", current.cancel) == fmt.Sprintf("%p", cancel) {
 		delete(h.active, consumerID)
 	}
 	h.mu.Unlock()
@@ -245,7 +264,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	ackCancel()
 
 	// Register this connection, kicking any previous one for the same consumer
-	connCtx, connCancel := h.registerConn(consumer.ID)
+	connCtx, connCancel := h.registerConn(consumer.ID, conn)
 	defer h.unregisterConn(consumer.ID, connCancel)
 	defer connCancel()
 
@@ -273,8 +292,8 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-connCtx.Done():
-			log.Info("WebSocket connection ended", "consumer", consumer.Name, "reason", connCtx.Err())
-			conn.Close(websocket.StatusNormalClosure, "Replaced by new connection")
+			// Connection was kicked by registerConn — WebSocket already closed there
+			log.Info("Connection replaced by new login", "consumer", consumer.Name)
 			return
 		case <-r.Context().Done():
 			log.Info("WebSocket client disconnected", "consumer", consumer.Name)
