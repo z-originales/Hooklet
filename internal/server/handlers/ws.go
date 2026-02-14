@@ -174,6 +174,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		log.Error("Failed to accept websocket", "error", err)
 		return
 	}
+	defer conn.CloseNow()
 
 	// 2. If not yet authenticated, wait for auth message (fallback for browser clients)
 	if consumer == nil {
