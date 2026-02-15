@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"hooklet/internal/api"
@@ -18,8 +19,15 @@ import (
 	"github.com/coder/websocket"
 )
 
+// maxTopicsPerSubscription limits the number of topics a single WS connection can request.
+const maxTopicsPerSubscription = 50
+
+// connID is an atomically incrementing counter for unique connection IDs.
+var connIDCounter atomic.Int64
+
 // activeConn tracks an active WebSocket connection for a consumer.
 type activeConn struct {
+	id     int64
 	cancel context.CancelFunc
 	conn   *websocket.Conn
 }
@@ -68,13 +76,15 @@ func sendAuthFailed(conn *websocket.Conn, writeTimeout time.Duration, reason str
 // registerConn registers a consumer's connection, kicking any existing one.
 // If an old connection exists, it sends a kicked notification and close frame
 // before cancelling the context, ensuring the client receives a proper close.
-func (h *WSHandler) registerConn(consumerID int64, conn *websocket.Conn) (context.Context, context.CancelFunc) {
+// Returns the connection context, cancel function, and a unique connection ID.
+func (h *WSHandler) registerConn(consumerID int64, conn *websocket.Conn) (context.Context, context.CancelFunc, int64) {
 	ctx, cancel := context.WithCancel(context.Background())
 	writeTimeout := time.Duration(h.cfg.WSWriteTimeoutSeconds) * time.Second
+	id := connIDCounter.Add(1)
 
 	h.mu.Lock()
 	if old, exists := h.active[consumerID]; exists {
-		// Notify old client before closing (best-effort, like sendAuthFailed)
+		// Notify old client before closing (best-effort)
 		kicked, _ := json.Marshal(map[string]string{"type": "kicked", "reason": "replaced_by_new_connection"})
 		notifyCtx, notifyCancel := context.WithTimeout(context.Background(), writeTimeout)
 		_ = old.conn.Write(notifyCtx, websocket.MessageText, kicked)
@@ -88,17 +98,17 @@ func (h *WSHandler) registerConn(consumerID int64, conn *websocket.Conn) (contex
 
 		log.Info("Kicked previous connection", "consumer_id", consumerID)
 	}
-	h.active[consumerID] = &activeConn{cancel: cancel, conn: conn}
+	h.active[consumerID] = &activeConn{id: id, cancel: cancel, conn: conn}
 	h.mu.Unlock()
 
-	return ctx, cancel
+	return ctx, cancel, id
 }
 
 // unregisterConn removes the consumer from the active map.
-// Only removes if the cancel matches (avoids race with a newer connection).
-func (h *WSHandler) unregisterConn(consumerID int64, cancel context.CancelFunc) {
+// Only removes if the connection ID matches (avoids race with a newer connection).
+func (h *WSHandler) unregisterConn(consumerID int64, id int64) {
 	h.mu.Lock()
-	if current, exists := h.active[consumerID]; exists && fmt.Sprintf("%p", current.cancel) == fmt.Sprintf("%p", cancel) {
+	if current, exists := h.active[consumerID]; exists && current.id == id {
 		delete(h.active, consumerID)
 	}
 	h.mu.Unlock()
@@ -141,6 +151,12 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		topicSet[topic] = struct{}{}
 		topics = append(topics, topic)
+	}
+
+	// Enforce topic count limit
+	if len(topics) > maxTopicsPerSubscription {
+		http.Error(w, fmt.Sprintf("Too many topics (max %d)", maxTopicsPerSubscription), http.StatusBadRequest)
+		return
 	}
 
 	var consumer *store.Consumer
@@ -242,7 +258,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			log.Warn("Consumer tried to subscribe to unauthorized topic", "consumer", consumer.Name, "topic", topic)
 			sendAuthFailed(conn, writeTimeout, "unauthorized topic: "+topic)
-			conn.Close(websocket.StatusPolicyViolation, "Unauthorized topic: "+topic)
+			conn.Close(websocket.StatusPolicyViolation, "Unauthorized topic")
 			return
 		}
 	}
@@ -265,8 +281,8 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	ackCancel()
 
 	// Register this connection, kicking any previous one for the same consumer
-	connCtx, connCancel := h.registerConn(consumer.ID, conn)
-	defer h.unregisterConn(consumer.ID, connCancel)
+	connCtx, connCancel, connID := h.registerConn(consumer.ID, conn)
+	defer h.unregisterConn(consumer.ID, connID)
 	defer connCancel()
 
 	// Stable queue name per consumer (no random suffix)
@@ -291,14 +307,13 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 
 	// CloseRead starts a background reader for close/ping/pong control frames
 	// and returns a context cancelled when the client disconnects.
-	// This is the library's built-in pattern for write-only connections.
 	closeCtx := conn.CloseRead(connCtx)
 
 	// Stream messages directly from RabbitMQ to WebSocket
 	for {
 		select {
 		case <-connCtx.Done():
-			// Connection was kicked by registerConn — WebSocket already closed there
+			// Connection was kicked by registerConn
 			log.Info("Connection replaced by new login", "consumer", consumer.Name)
 			return
 		case <-closeCtx.Done():
