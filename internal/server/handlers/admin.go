@@ -2,16 +2,23 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"hooklet/internal/api"
 	"hooklet/internal/server/auth"
 	"hooklet/internal/server/httpresponse"
 	"hooklet/internal/store"
 
 	"github.com/charmbracelet/log"
 )
+
+// maxAdminBodyBytes limits the size of admin request bodies to prevent OOM.
+const maxAdminBodyBytes = 1 << 20 // 1 MB
 
 // AdminHandler hosts admin routes.
 type AdminHandler struct {
@@ -68,8 +75,7 @@ func (h *AdminHandler) Webhooks(w http.ResponseWriter, r *http.Request) {
 
 		if err != nil {
 			log.Error("Failed to create webhook", "error", err)
-			// check for constraint error (duplicate name)
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			if isUniqueConstraintError(err) {
 				httpresponse.WriteError(w, "Webhook name already exists", http.StatusConflict)
 				return
 			}
@@ -86,12 +92,13 @@ func (h *AdminHandler) Webhooks(w http.ResponseWriter, r *http.Request) {
 				Webhook: wh,
 				Token:   token,
 			}
-			httpresponse.WriteJSONSensitive(w, resp)
+			httpresponse.WriteJSONSensitiveStatus(w, http.StatusCreated, resp)
 		} else {
-			httpresponse.WriteJSON(w, wh)
+			httpresponse.WriteJSONStatus(w, http.StatusCreated, wh)
 		}
 
 	default:
+		w.Header().Set("Allow", "GET, POST")
 		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
@@ -99,7 +106,7 @@ func (h *AdminHandler) Webhooks(w http.ResponseWriter, r *http.Request) {
 // WebhookByID handles /admin/webhooks/{id} and token subroutes.
 func (h *AdminHandler) WebhookByID(w http.ResponseWriter, r *http.Request) {
 	// Parse path: /admin/webhooks/{id}[/action]
-	path := strings.TrimPrefix(r.URL.Path, "/admin/webhooks/")
+	path := strings.TrimPrefix(r.URL.Path, api.RouteAdminWebhooksN)
 	parts := strings.SplitN(path, "/", 2)
 
 	idStr := parts[0]
@@ -118,6 +125,7 @@ func (h *AdminHandler) WebhookByID(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "": // DELETE /admin/webhooks/{id}
 		if r.Method != http.MethodDelete {
+			w.Header().Set("Allow", http.MethodDelete)
 			httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -130,6 +138,7 @@ func (h *AdminHandler) WebhookByID(w http.ResponseWriter, r *http.Request) {
 
 	case "set-token": // POST /admin/webhooks/{id}/set-token
 		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
 			httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -175,6 +184,7 @@ func (h *AdminHandler) WebhookByID(w http.ResponseWriter, r *http.Request) {
 
 	case "clear-token": // POST /admin/webhooks/{id}/clear-token
 		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
 			httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -241,7 +251,7 @@ func (h *AdminHandler) Consumers(w http.ResponseWriter, r *http.Request) {
 		consumer, err := h.db.CreateConsumer(req.Name, token)
 		if err != nil {
 			log.Error("Failed to create consumer", "error", err)
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			if isUniqueConstraintError(err) {
 				httpresponse.WriteError(w, "Consumer name already exists", http.StatusConflict)
 				return
 			}
@@ -265,9 +275,10 @@ func (h *AdminHandler) Consumers(w http.ResponseWriter, r *http.Request) {
 			Consumer: consumer,
 			Token:    token,
 		}
-		httpresponse.WriteJSONSensitive(w, resp)
+		httpresponse.WriteJSONSensitiveStatus(w, http.StatusCreated, resp)
 
 	default:
+		w.Header().Set("Allow", "GET, POST")
 		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
@@ -275,7 +286,7 @@ func (h *AdminHandler) Consumers(w http.ResponseWriter, r *http.Request) {
 // ConsumerByID handles DELETE, PATCH, and sub-routes for /admin/consumers/{id}.
 func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 	// Parse the path: /admin/consumers/{id} or /admin/consumers/{id}/{action}
-	path := strings.TrimPrefix(r.URL.Path, "/admin/consumers/")
+	path := strings.TrimPrefix(r.URL.Path, api.RouteAdminConsumerN)
 	parts := strings.Split(path, "/")
 
 	id, err := parseID(parts[0])
@@ -301,7 +312,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodDelete:
 		if err := h.db.DeleteConsumer(id); err != nil {
-			if strings.Contains(err.Error(), "not found") {
+			if isNotFoundError(err) {
 				httpresponse.WriteError(w, "Consumer not found", http.StatusNotFound)
 				return
 			}
@@ -323,7 +334,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 
 		if req.Subscriptions != nil {
 			if err := h.db.SetConsumerSubscriptions(id, *req.Subscriptions); err != nil {
-				if strings.Contains(err.Error(), "not found") {
+				if isNotFoundError(err) {
 					httpresponse.WriteError(w, "Consumer not found", http.StatusNotFound)
 					return
 				}
@@ -342,7 +353,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 			}
 			newHash := store.HashString(newToken)
 			if err := h.db.RegenerateConsumerToken(id, newHash); err != nil {
-				if strings.Contains(err.Error(), "not found") {
+				if isNotFoundError(err) {
 					httpresponse.WriteError(w, "Consumer not found", http.StatusNotFound)
 					return
 				}
@@ -357,6 +368,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 
 	default:
+		w.Header().Set("Allow", "DELETE, PATCH")
 		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
@@ -365,6 +377,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 // POST /admin/consumers/{id}/subscribe
 func (h *AdminHandler) handleConsumerSubscribe(w http.ResponseWriter, r *http.Request, consumerID int64) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -394,6 +407,7 @@ func (h *AdminHandler) handleConsumerSubscribe(w http.ResponseWriter, r *http.Re
 // POST /admin/consumers/{id}/unsubscribe
 func (h *AdminHandler) handleConsumerUnsubscribe(w http.ResponseWriter, r *http.Request, consumerID int64) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -411,7 +425,7 @@ func (h *AdminHandler) handleConsumerUnsubscribe(w http.ResponseWriter, r *http.
 	}
 
 	if err := h.db.Unsubscribe(consumerID, req.Topic); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if isNotFoundError(err) {
 			httpresponse.WriteError(w, "Subscription not found", http.StatusNotFound)
 			return
 		}
@@ -423,15 +437,30 @@ func (h *AdminHandler) handleConsumerUnsubscribe(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// parseID parses a string ID to int64.
+// parseID parses a string ID to int64, rejecting negative values.
 func parseID(s string) (int64, error) {
-	// Simple wrapper, could use strconv directly but this keeps imports cleaner if we want
-	// to add more complex validation later.
-	var id int64
-	_, err := fmt.Sscanf(s, "%d", &id)
-	return id, err
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid id: %w", err)
+	}
+	if id <= 0 {
+		return 0, errors.New("id must be positive")
+	}
+	return id, nil
 }
 
+// decodeJSON reads and decodes a JSON body with a size limit.
 func decodeJSON(r *http.Request, dst any) error {
-	return json.NewDecoder(r.Body).Decode(dst)
+	reader := io.LimitReader(r.Body, maxAdminBodyBytes)
+	return json.NewDecoder(reader).Decode(dst)
+}
+
+// isUniqueConstraintError checks if an error is a SQLite unique constraint violation.
+func isUniqueConstraintError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// isNotFoundError checks if an error indicates a resource was not found.
+func isNotFoundError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
 }
