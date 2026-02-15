@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"hooklet/internal/config"
 	"io"
 	"net"
 	"net/http"
@@ -13,11 +12,15 @@ import (
 	"time"
 
 	"hooklet/internal/api"
+	"hooklet/internal/config"
 	"hooklet/internal/store"
 
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/log"
 )
+
+// httpClientTimeout is the default timeout for HTTP requests from the CLI.
+const httpClientTimeout = 30 * time.Second
 
 // CLI defines the command-line interface structure.
 var CLI struct {
@@ -42,7 +45,7 @@ type Context struct {
 	client     *http.Client
 }
 
-// getClient returns an HTTP client configured for either Unix Socket or TCP
+// getClient returns an HTTP client configured for either Unix Socket or TCP.
 func (c *Context) getClient() *http.Client {
 	if c.client != nil {
 		return c.client
@@ -50,7 +53,7 @@ func (c *Context) getClient() *http.Client {
 
 	// If Host is explicitly set, use standard HTTP client
 	if c.Host != "" {
-		c.client = http.DefaultClient
+		c.client = &http.Client{Timeout: httpClientTimeout}
 		return c.client
 	}
 
@@ -62,9 +65,11 @@ func (c *Context) getClient() *http.Client {
 
 	// Custom Transport for Unix Socket
 	c.client = &http.Client{
+		Timeout: httpClientTimeout,
 		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
 			},
 		},
 	}
@@ -98,7 +103,7 @@ func (c *Context) adminRequest(method, path string, body any) (*http.Response, e
 	}
 	// Add token only if we have one, but for local socket it's optional
 	if c.AdminToken != "" {
-		req.Header.Set("X-Hooklet-Admin-Token", c.AdminToken)
+		req.Header.Set(api.HeaderAuthorization, api.BearerPrefix+c.AdminToken)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -126,13 +131,13 @@ func (c *WebhookCreateCmd) Run(ctx *Context) error {
 		"name":       c.Name,
 		"with_token": c.WithToken,
 	}
-	resp, err := ctx.adminRequest(http.MethodPost, "/admin/webhooks", req)
+	resp, err := ctx.adminRequest(http.MethodPost, api.RouteAdminWebhooks, req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("failed: %s", body)
 	}
@@ -165,7 +170,7 @@ func (c *WebhookCreateCmd) Run(ctx *Context) error {
 type WebhookListCmd struct{}
 
 func (c *WebhookListCmd) Run(ctx *Context) error {
-	resp, err := ctx.adminRequest(http.MethodGet, "/admin/webhooks", nil)
+	resp, err := ctx.adminRequest(http.MethodGet, api.RouteAdminWebhooks, nil)
 	if err != nil {
 		return err
 	}
@@ -205,7 +210,7 @@ type WebhookDeleteCmd struct {
 }
 
 func (c *WebhookDeleteCmd) Run(ctx *Context) error {
-	path := fmt.Sprintf("/admin/webhooks/%d", c.ID)
+	path := fmt.Sprintf("%s%d", api.RouteAdminWebhooksN, c.ID)
 	resp, err := ctx.adminRequest(http.MethodDelete, path, nil)
 	if err != nil {
 		return err
@@ -227,7 +232,7 @@ type WebhookSetTokenCmd struct {
 }
 
 func (c *WebhookSetTokenCmd) Run(ctx *Context) error {
-	path := fmt.Sprintf("/admin/webhooks/%d/set-token", c.ID)
+	path := fmt.Sprintf("%s%d/set-token", api.RouteAdminWebhooksN, c.ID)
 	resp, err := ctx.adminRequest(http.MethodPost, path, nil)
 	if err != nil {
 		return err
@@ -261,7 +266,7 @@ type WebhookClearTokenCmd struct {
 }
 
 func (c *WebhookClearTokenCmd) Run(ctx *Context) error {
-	path := fmt.Sprintf("/admin/webhooks/%d/clear-token", c.ID)
+	path := fmt.Sprintf("%s%d/clear-token", api.RouteAdminWebhooksN, c.ID)
 	resp, err := ctx.adminRequest(http.MethodPost, path, nil)
 	if err != nil {
 		return err
@@ -299,13 +304,13 @@ func (c *ConsumerCreateCmd) Run(ctx *Context) error {
 		"name":          c.Name,
 		"subscriptions": c.Subscriptions,
 	}
-	resp, err := ctx.adminRequest(http.MethodPost, "/admin/consumers", req)
+	resp, err := ctx.adminRequest(http.MethodPost, api.RouteAdminConsumers, req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("failed: %s", body)
 	}
@@ -327,7 +332,7 @@ func (c *ConsumerCreateCmd) Run(ctx *Context) error {
 type ConsumerListCmd struct{}
 
 func (c *ConsumerListCmd) Run(ctx *Context) error {
-	resp, err := ctx.adminRequest(http.MethodGet, "/admin/consumers", nil)
+	resp, err := ctx.adminRequest(http.MethodGet, api.RouteAdminConsumers, nil)
 	if err != nil {
 		return err
 	}
@@ -358,7 +363,7 @@ type ConsumerDeleteCmd struct {
 }
 
 func (c *ConsumerDeleteCmd) Run(ctx *Context) error {
-	path := fmt.Sprintf("/admin/consumers/%d", c.ID)
+	path := fmt.Sprintf("%s%d", api.RouteAdminConsumerN, c.ID)
 	resp, err := ctx.adminRequest(http.MethodDelete, path, nil)
 	if err != nil {
 		return err
@@ -381,7 +386,7 @@ type ConsumerSubscribeCmd struct {
 }
 
 func (c *ConsumerSubscribeCmd) Run(ctx *Context) error {
-	path := fmt.Sprintf("/admin/consumers/%d/subscribe", c.ID)
+	path := fmt.Sprintf("%s%d/subscribe", api.RouteAdminConsumerN, c.ID)
 	req := map[string]string{"topic": c.Topic}
 	resp, err := ctx.adminRequest(http.MethodPost, path, req)
 	if err != nil {
@@ -408,7 +413,7 @@ type ConsumerUnsubscribeCmd struct {
 }
 
 func (c *ConsumerUnsubscribeCmd) Run(ctx *Context) error {
-	path := fmt.Sprintf("/admin/consumers/%d/unsubscribe", c.ID)
+	path := fmt.Sprintf("%s%d/unsubscribe", api.RouteAdminConsumerN, c.ID)
 	req := map[string]string{"topic": c.Topic}
 	resp, err := ctx.adminRequest(http.MethodPost, path, req)
 	if err != nil {
@@ -432,7 +437,7 @@ type ConsumerSetSubsCmd struct {
 }
 
 func (c *ConsumerSetSubsCmd) Run(ctx *Context) error {
-	path := fmt.Sprintf("/admin/consumers/%d", c.ID)
+	path := fmt.Sprintf("%s%d", api.RouteAdminConsumerN, c.ID)
 	req := map[string]string{"subscriptions": c.Subscriptions}
 	resp, err := ctx.adminRequest(http.MethodPatch, path, req)
 	if err != nil {
@@ -457,7 +462,7 @@ type ConsumerRegenTokenCmd struct {
 }
 
 func (c *ConsumerRegenTokenCmd) Run(ctx *Context) error {
-	path := fmt.Sprintf("/admin/consumers/%d", c.ID)
+	path := fmt.Sprintf("%s%d", api.RouteAdminConsumerN, c.ID)
 	req := map[string]bool{"regenerate_token": true}
 	resp, err := ctx.adminRequest(http.MethodPatch, path, req)
 	if err != nil {
