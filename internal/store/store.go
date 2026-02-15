@@ -41,14 +41,6 @@ type Consumer struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// TopicSubscription represents a consumer's subscription to a topic.
-type TopicSubscription struct {
-	ID         int64     `json:"id"`
-	ConsumerID int64     `json:"consumer_id"`
-	TopicID    int64     `json:"topic_id"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
 type Store struct {
 	db *sql.DB
 }
@@ -63,17 +55,36 @@ func New(path string) (*Store, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// SQLite concurrency: single connection avoids "database is locked" errors
+	// and ensures PRAGMAs (foreign_keys, WAL) apply consistently.
+	db.SetMaxOpenConns(1)
+
 	if err := db.Ping(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	// Enable WAL mode for better concurrent read performance
+	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
+	}
+
+	// Set busy timeout to avoid immediate "database is locked" errors
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
 	}
 
 	// Enable foreign keys
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
 	s := &Store{db: db}
 	if err := s.init(); err != nil {
+		db.Close()
 		return nil, err
 	}
 
@@ -230,6 +241,9 @@ func (s *Store) ListTopics() ([]Topic, error) {
 		}
 		topics = append(topics, t)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate topics: %w", err)
+	}
 	return topics, nil
 }
 
@@ -343,6 +357,9 @@ func (s *Store) ListWebhooks() ([]Webhook, error) {
 			return nil, err
 		}
 		webhooks = append(webhooks, *w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate webhooks: %w", err)
 	}
 	return webhooks, nil
 }
@@ -478,6 +495,9 @@ func (s *Store) ListConsumers() ([]Consumer, error) {
 		}
 		consumers = append(consumers, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate consumers: %w", err)
+	}
 	return consumers, nil
 }
 
@@ -587,6 +607,9 @@ func (s *Store) GetConsumerSubscriptions(consumerID int64) ([]Topic, error) {
 			return nil, err
 		}
 		topics = append(topics, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate subscriptions: %w", err)
 	}
 	return topics, nil
 }
