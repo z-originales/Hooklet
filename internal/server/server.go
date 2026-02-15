@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -71,23 +72,25 @@ func (s *Server) Start() error {
 	if err != nil {
 		log.Warn("Unix socket listener failed (admin socket disabled)", "error", err)
 	} else {
+		// Restrict socket permissions to owner only (0600)
+		if err := os.Chmod(s.cfg.SocketPath, 0600); err != nil {
+			log.Warn("Failed to set socket permissions", "error", err)
+		}
 		log.Info("Listening on Unix Socket", "path", s.cfg.SocketPath)
 	}
 
 	// Create HTTP servers
-	serverTimeouts := http.Server{
-		ReadTimeout:       time.Duration(s.cfg.HTTPReadTimeoutSeconds) * time.Second,
-		WriteTimeout:      time.Duration(s.cfg.HTTPWriteTimeoutSeconds) * time.Second,
-		IdleTimeout:       time.Duration(s.cfg.HTTPIdleTimeoutSeconds) * time.Second,
-		ReadHeaderTimeout: time.Duration(s.cfg.HTTPReadHeaderTimeoutSeconds) * time.Second,
-	}
+	readTimeout := time.Duration(s.cfg.HTTPReadTimeoutSeconds) * time.Second
+	writeTimeout := time.Duration(s.cfg.HTTPWriteTimeoutSeconds) * time.Second
+	idleTimeout := time.Duration(s.cfg.HTTPIdleTimeoutSeconds) * time.Second
+	readHeaderTimeout := time.Duration(s.cfg.HTTPReadHeaderTimeoutSeconds) * time.Second
 
 	s.tcpServer = &http.Server{
 		Handler:           middlewareSource("api", mux),
-		ReadTimeout:       serverTimeouts.ReadTimeout,
-		WriteTimeout:      serverTimeouts.WriteTimeout,
-		IdleTimeout:       serverTimeouts.IdleTimeout,
-		ReadHeaderTimeout: serverTimeouts.ReadHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
 	// Unix socket server uses a special handler that injects admin bypass context
@@ -97,10 +100,10 @@ func (s *Server) Start() error {
 	})
 	s.unixServer = &http.Server{
 		Handler:           middlewareSource("unix", trustedHandler),
-		ReadTimeout:       serverTimeouts.ReadTimeout,
-		WriteTimeout:      serverTimeouts.WriteTimeout,
-		IdleTimeout:       serverTimeouts.IdleTimeout,
-		ReadHeaderTimeout: serverTimeouts.ReadHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
 	// Start TCP server
@@ -124,19 +127,23 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully stops the HTTP servers.
 func (s *Server) Shutdown(ctx context.Context) error {
+	var errs []error
+
 	log.Info("Shutting down TCP server...")
 	if err := s.tcpServer.Shutdown(ctx); err != nil {
 		log.Error("TCP server shutdown error", "error", err)
+		errs = append(errs, err)
 	}
 
 	if s.unixServer != nil {
 		log.Info("Shutting down Unix socket server...")
 		if err := s.unixServer.Shutdown(ctx); err != nil {
 			log.Error("Unix server shutdown error", "error", err)
+			errs = append(errs, err)
 		}
 		os.Remove(s.cfg.SocketPath)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // trackTopic records active topics for listing.
