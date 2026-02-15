@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"io"
 	"net/http"
@@ -32,6 +33,7 @@ func NewWebhookHandler(mq *queue.Client, db *store.Store, trackTopic func(string
 // Publish handles POST /webhook/{topic}.
 func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		httpresponse.WriteError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -50,8 +52,6 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	// Validate webhook exists in DB
 	// Strict Mode: The URL contains the topic_hash directly (e.g., /webhook/a1b2c3...).
 	// This prevents topic enumeration - only those who know the hash can publish.
-	// We look up the hash directly in the DB without re-hashing.
-	// The URL segment IS the hash
 	wh, err := h.db.GetWebhookByHash(hookHash)
 	if err != nil {
 		log.Error("Failed to check webhook existence", "topic_hash", hookHash, "error", err)
@@ -72,7 +72,9 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 			httpresponse.WriteError(w, "Authentication required", http.StatusUnauthorized)
 			return
 		}
-		if store.HashString(token) != *wh.TokenHash {
+		// Constant-time comparison to prevent timing attacks
+		tokenHash := store.HashString(token)
+		if subtle.ConstantTimeCompare([]byte(tokenHash), []byte(*wh.TokenHash)) != 1 {
 			log.Warn("Invalid auth token for webhook", "topic_hash", hookHash, "webhook", wh.Name)
 			httpresponse.WriteError(w, "Invalid token", http.StatusUnauthorized)
 			return
@@ -98,7 +100,6 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Publish to queue using the webhook's original name as routing key
-	// (RabbitMQ routing uses the human-readable name internally)
 	if err := h.mq.Publish(ctx, wh.Name, body); err != nil {
 		if errors.Is(err, queue.ErrNoRoute) {
 			log.Info("Webhook received", "topic", wh.Name, "hash", hookHash, "size", len(body))
