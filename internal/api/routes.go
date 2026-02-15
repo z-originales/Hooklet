@@ -8,4 +8,10 @@ const (
 	RoutePublish   = "/webhook/" // + {hash}
 	RouteTopics    = "/api/topics"
 	RouteSubscribe = "/ws/" // + {topic}
+
+	// Admin endpoints
+	RouteAdminWebhooks  = "/admin/webhooks"
+	RouteAdminWebhooksN = "/admin/webhooks/" // + {id}[/action]
+	RouteAdminConsumers = "/admin/consumers"
+	RouteAdminConsumerN = "/admin/consumers/" // + {id}[/action]
 )
