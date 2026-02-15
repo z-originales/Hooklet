@@ -53,9 +53,12 @@ func (h *PublicHandler) TopicsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var topics []string
+	topics := make([]string, 0)
 	if h.Topics != nil {
 		topics = h.Topics()
+		if topics == nil {
+			topics = make([]string, 0)
+		}
 	}
 
 	httpresponse.WriteJSON(w, api.TopicsResponse{Topics: topics})
