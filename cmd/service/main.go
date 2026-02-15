@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -30,8 +31,11 @@ func main() {
 	// Build RabbitMQ URL from components (or use full URL if provided)
 	rabbitURL := cfg.RabbitURL
 	if rabbitURL == "" {
+		// Percent-encode credentials to handle special characters
 		rabbitURL = fmt.Sprintf("amqp://%s:%s@%s:%s/",
-			cfg.RabbitUser, cfg.RabbitPass, cfg.RabbitHost, cfg.RabbitPort)
+			url.QueryEscape(cfg.RabbitUser),
+			url.QueryEscape(cfg.RabbitPass),
+			cfg.RabbitHost, cfg.RabbitPort)
 	}
 
 	// Connect to RabbitMQ
@@ -48,6 +52,7 @@ func main() {
 	// Connect to SQLite
 	db, err := store.New(cfg.DBPath)
 	if err != nil {
+		mqClient.Close()
 		log.Fatal("Failed to connect to SQLite", "error", err)
 	}
 	log.Info("Connected to SQLite", "path", cfg.DBPath)
@@ -55,6 +60,8 @@ func main() {
 	// Create and start the server
 	srv := server.New(cfg, db, mqClient)
 	if err := srv.Start(); err != nil {
+		db.Close()
+		mqClient.Close()
 		log.Fatal("Failed to start server", "error", err)
 	}
 	log.Info("Service ready", "port", cfg.Port)
