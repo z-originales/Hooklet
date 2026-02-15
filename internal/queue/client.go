@@ -33,8 +33,9 @@ type Client struct {
 	closed   bool
 	returnCh chan amqp.Return
 
-	pubMu       sync.Mutex
-	notifyClose chan *amqp.Error
+	pubMu      sync.Mutex
+	closeCh    chan struct{} // signals Close() to reconnect goroutine
+	reconnectW sync.WaitGroup
 }
 
 const (
@@ -45,8 +46,9 @@ const (
 // NewClient connects to RabbitMQ and returns a ready-to-use client.
 func NewClient(url string, cfg Config) (*Client, error) {
 	c := &Client{
-		url: url,
-		cfg: cfg,
+		url:     url,
+		cfg:     cfg,
+		closeCh: make(chan struct{}),
 	}
 
 	if err := c.connect(); err != nil {
@@ -54,6 +56,7 @@ func NewClient(url string, cfg Config) (*Client, error) {
 	}
 
 	// Start reconnection goroutine
+	c.reconnectW.Add(1)
 	go c.handleReconnect()
 
 	return c, nil
@@ -100,49 +103,77 @@ func (c *Client) connect() error {
 	ch.NotifyReturn(returnCh)
 
 	c.mu.Lock()
+	// Close old resources if reconnecting
+	oldCh := c.channel
+	oldConn := c.conn
 	c.conn = conn
 	c.channel = ch
 	c.returnCh = returnCh
-	c.notifyClose = make(chan *amqp.Error, 1)
-	c.conn.NotifyClose(c.notifyClose)
 	c.mu.Unlock()
+
+	// Clean up old resources outside the lock
+	if oldCh != nil {
+		oldCh.Close()
+	}
+	if oldConn != nil && !oldConn.IsClosed() {
+		oldConn.Close()
+	}
 
 	return nil
 }
 
 // handleReconnect monitors connection and reconnects on failure.
 func (c *Client) handleReconnect() {
+	defer c.reconnectW.Done()
+
 	for {
 		c.mu.RLock()
-		if c.closed {
-			c.mu.RUnlock()
-			return
-		}
-		notifyClose := c.notifyClose
+		conn := c.conn
 		c.mu.RUnlock()
 
-		// Wait for connection close notification
-		err := <-notifyClose
-		if err == nil {
-			// Graceful close (client shutdown), exit
+		if conn == nil {
 			return
 		}
 
-		log.Warn("RabbitMQ connection lost, reconnecting...", "error", err)
+		// Register for both connection and channel close notifications
+		connClose := make(chan *amqp.Error, 1)
+		conn.NotifyClose(connClose)
+
+		c.mu.RLock()
+		ch := c.channel
+		c.mu.RUnlock()
+
+		chanClose := make(chan *amqp.Error, 1)
+		if ch != nil {
+			ch.NotifyClose(chanClose)
+		}
+
+		// Wait for connection or channel failure, or explicit close
+		select {
+		case <-c.closeCh:
+			return
+		case err := <-connClose:
+			if err == nil {
+				return // graceful close
+			}
+			log.Warn("RabbitMQ connection lost, reconnecting...", "error", err)
+		case err := <-chanClose:
+			if err == nil {
+				return // graceful close
+			}
+			log.Warn("RabbitMQ channel lost, reconnecting...", "error", err)
+		}
 
 		// Exponential backoff reconnection
 		backoff := time.Second
 		maxBackoff := 30 * time.Second
 
 		for {
-			c.mu.RLock()
-			if c.closed {
-				c.mu.RUnlock()
+			select {
+			case <-c.closeCh:
 				return
+			case <-time.After(backoff):
 			}
-			c.mu.RUnlock()
-
-			time.Sleep(backoff)
 
 			if err := c.connect(); err != nil {
 				log.Error("Reconnection failed", "error", err, "retry_in", backoff)
@@ -167,17 +198,27 @@ func (c *Client) IsConnected() bool {
 }
 
 // Close cleanly shuts down the channel and connection.
+// It waits for the reconnect goroutine to exit.
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.closed = true
-
-	if c.channel != nil {
-		c.channel.Close()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
 	}
-	if c.conn != nil {
-		return c.conn.Close()
+	c.closed = true
+	close(c.closeCh)
+	ch := c.channel
+	conn := c.conn
+	c.mu.Unlock()
+
+	// Wait for reconnect goroutine to exit
+	c.reconnectW.Wait()
+
+	if ch != nil {
+		ch.Close()
+	}
+	if conn != nil {
+		return conn.Close()
 	}
 	return nil
 }
