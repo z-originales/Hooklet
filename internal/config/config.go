@@ -4,6 +4,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/log"
 )
 
 // Defaults
@@ -56,7 +58,7 @@ type Config struct {
 
 // Load reads configuration from environment variables or uses defaults.
 func Load() Config {
-	return Config{
+	cfg := Config{
 		Port:                         getEnv("PORT", DefaultPort),
 		DBPath:                       getEnv("HOOKLET_DB_PATH", DefaultDBPath),
 		RabbitURL:                    os.Getenv("RABBITMQ_URL"),
@@ -80,6 +82,25 @@ func Load() Config {
 		WSAllowedOrigins:             getEnvCSV("HOOKLET_WS_ORIGINS"),
 		LogLevel:                     getEnv("HOOKLET_LOG_LEVEL", DefaultLogLevel),
 	}
+
+	// Validate configuration
+	if cfg.Port == "" {
+		cfg.Port = DefaultPort
+	}
+	if cfg.MessageTTL < 0 {
+		log.Warn("Invalid HOOKLET_MESSAGE_TTL (must be >= 0), using default", "value", cfg.MessageTTL)
+		cfg.MessageTTL = DefaultMessageTTL
+	}
+	if cfg.QueueExpiry < 0 {
+		log.Warn("Invalid HOOKLET_QUEUE_EXPIRY (must be >= 0), using default", "value", cfg.QueueExpiry)
+		cfg.QueueExpiry = DefaultQueueExpiry
+	}
+	if cfg.MaxBodyBytes <= 0 {
+		log.Warn("Invalid HOOKLET_MAX_BODY_BYTES (must be > 0), using default", "value", cfg.MaxBodyBytes)
+		cfg.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+
+	return cfg
 }
 
 func getEnv(key, fallback string) string {
@@ -90,21 +111,29 @@ func getEnv(key, fallback string) string {
 }
 
 func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
 	}
-	return fallback
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		log.Warn("Invalid integer for env var, using default", "key", key, "value", v, "default", fallback)
+		return fallback
+	}
+	return i
 }
 
 func getEnvBool(key string, fallback bool) bool {
-	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
 	}
-	return fallback
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		log.Warn("Invalid boolean for env var, using default", "key", key, "value", v, "default", fallback)
+		return fallback
+	}
+	return b
 }
 
 func getEnvCSV(key string) []string {
