@@ -1,8 +1,11 @@
 package server
 
 import (
+	"crypto/subtle"
 	"net/http"
+	"strings"
 
+	"hooklet/internal/api"
 	"hooklet/internal/server/auth"
 	"hooklet/internal/server/httpresponse"
 
@@ -29,9 +32,11 @@ func (s *Server) adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 2. Standard Admin Auth
-		token := r.Header.Get("X-Hooklet-Admin-Token")
-		// Use config instead of os.Getenv directly
+		// 2. Standard Admin Auth via Authorization: Bearer <token>
+		token := ""
+		if header := r.Header.Get(api.HeaderAuthorization); strings.HasPrefix(header, api.BearerPrefix) {
+			token = strings.TrimPrefix(header, api.BearerPrefix)
+		}
 		expected := s.cfg.AdminToken
 
 		// If no auth is configured, allow everyone only in debug mode
@@ -44,8 +49,8 @@ func (s *Server) adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Otherwise (remote OR local with token provided), enforce verification
-		if token != expected {
+		// Constant-time comparison to prevent timing attacks
+		if subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 			httpresponse.WriteError(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

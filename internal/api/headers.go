@@ -5,7 +5,7 @@ package api
 const HeaderAuthToken = "X-Hooklet-Token"
 
 // HeaderAuthorization is the standard HTTP Authorization header.
-// Used for WebSocket authentication: "Authorization: Bearer <token>"
+// Used for admin API and WebSocket authentication: "Authorization: Bearer <token>"
 const HeaderAuthorization = "Authorization"
 
 // BearerPrefix is the prefix for Bearer token authentication.
