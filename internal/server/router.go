@@ -23,11 +23,10 @@ func (s *Server) newRouter() *http.ServeMux {
 	mux.HandleFunc(api.RouteSubscribe, wsHandler.Subscribe)
 
 	// Admin Routes (protected by middleware)
-	// We wrap each handler with the admin auth middleware
-	mux.HandleFunc("/admin/webhooks", s.adminAuthMiddleware(adminHandler.Webhooks))
-	mux.HandleFunc("/admin/webhooks/", s.adminAuthMiddleware(adminHandler.WebhookByID))
-	mux.HandleFunc("/admin/consumers", s.adminAuthMiddleware(adminHandler.Consumers))
-	mux.HandleFunc("/admin/consumers/", s.adminAuthMiddleware(adminHandler.ConsumerByID))
+	mux.HandleFunc(api.RouteAdminWebhooks, s.adminAuthMiddleware(adminHandler.Webhooks))
+	mux.HandleFunc(api.RouteAdminWebhooksN, s.adminAuthMiddleware(adminHandler.WebhookByID))
+	mux.HandleFunc(api.RouteAdminConsumers, s.adminAuthMiddleware(adminHandler.Consumers))
+	mux.HandleFunc(api.RouteAdminConsumerN, s.adminAuthMiddleware(adminHandler.ConsumerByID))
 
 	return mux
 }
