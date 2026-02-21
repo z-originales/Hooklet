@@ -56,18 +56,12 @@ func New(path string) (*Store, error) {
 	}
 
 	// SQLite concurrency: single connection avoids "database is locked" errors
-	// and ensures PRAGMAs (foreign_keys, WAL) apply consistently.
+	// and ensures PRAGMAs apply consistently.
 	db.SetMaxOpenConns(1)
 
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	// Enable WAL mode for better concurrent read performance
-	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
 	// Set busy timeout to avoid immediate "database is locked" errors
