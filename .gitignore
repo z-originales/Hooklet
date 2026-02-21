@@ -3,7 +3,7 @@ hooklet
 hooklet-cli
 *.exe
 # Local configs/data
-*.db
+*.db*
 *.sock
 *.log
 *test.yml
