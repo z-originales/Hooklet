@@ -1,4 +1,5 @@
 # Binaries
+/bin
 hooklet
 hooklet-cli
 *.exe
