@@ -17,6 +17,8 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+var version = "dev"
+
 func main() {
 	// Load configuration from environment
 	cfg := config.Load()
@@ -56,6 +58,8 @@ func main() {
 		log.Fatal("Failed to connect to SQLite", "error", err)
 	}
 	log.Info("Connected to SQLite", "path", cfg.DBPath)
+
+	log.Debugf("Setup complete, starting hooklet version %s", version)
 
 	// Create and start the server
 	srv := server.New(cfg, db, mqClient)

@@ -22,18 +22,21 @@ import (
 // httpClientTimeout is the default timeout for HTTP requests from the CLI.
 const httpClientTimeout = 30 * time.Second
 
+var Version = "dev"
+
 // CLI defines the command-line interface structure.
 var CLI struct {
-	// Global flags
-	Host       string `help:"Service host (defaults to Unix socket if available)" default:"" env:"HOOKLET_HOST"`
-	Port       string `help:"Service port (only used if host is set)" default:"8080" env:"HOOKLET_PORT"`
-	AdminToken string `help:"Admin token for management commands" env:"HOOKLET_ADMIN_TOKEN"`
-	Socket     string `help:"Unix socket path" env:"HOOKLET_SOCKET"`
-
 	// Commands (Administration only - no publish/subscribe)
 	Status   StatusCmd   `cmd:"" help:"Check service status"`
 	Webhook  WebhookCmd  `cmd:"" help:"Manage webhooks"`
 	Consumer ConsumerCmd `cmd:"" help:"Manage consumers"`
+
+	// Global flags
+	Host       string           `help:"Service host (defaults to Unix socket if available)" default:"" env:"HOOKLET_HOST"`
+	Port       string           `help:"Service port (only used if host is set)" default:"8080" env:"HOOKLET_PORT"`
+	AdminToken string           `help:"Admin token for management commands" env:"HOOKLET_ADMIN_TOKEN"`
+	Socket     string           `help:"Unix socket path" env:"HOOKLET_SOCKET"`
+	Version    kong.VersionFlag `help:"Print version." short:"v"`
 }
 
 // Context holds shared CLI context.
@@ -523,6 +526,9 @@ func main() {
 	kctx := kong.Parse(&CLI,
 		kong.Name("hooklet"),
 		kong.Description("CLI client for hooklet webhook service"),
+		kong.Vars{
+			"version": Version,
+		},
 		kong.ConfigureHelp(kong.HelpOptions{
 			NoExpandSubcommands: true,
 			Compact:             true,
