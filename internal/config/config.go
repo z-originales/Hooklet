@@ -66,8 +66,8 @@ func Load() Config {
 		RabbitPort:                   getEnv("RABBITMQ_PORT", DefaultRabbitPort),
 		RabbitUser:                   getEnv("RABBITMQ_USER", DefaultRabbitUser),
 		RabbitPass:                   getEnv("RABBITMQ_PASS", DefaultRabbitPass),
-		MessageTTL:                   getEnvInt("HOOKLET_MESSAGE_TTL", DefaultMessageTTL),
-		QueueExpiry:                  getEnvInt("HOOKLET_QUEUE_EXPIRY", DefaultQueueExpiry),
+		MessageTTL:                   getEnvInt("HOOKLET_MESSAGE_TTL", DefaultMessageTTL),   // TODO : Error if lt 0 and disable if eq 0
+		QueueExpiry:                  getEnvInt("HOOKLET_QUEUE_EXPIRY", DefaultQueueExpiry), //TODO : warning if eq MessageTTL and error if lt MessageTTL and disable if eq 0
 		SocketPath:                   getEnv("HOOKLET_SOCKET", DefaultSocketPath),
 		AdminToken:                   os.Getenv("HOOKLET_ADMIN_TOKEN"),
 		AdminDebug:                   getEnvBool("HOOKLET_ADMIN_DEBUG", false),
@@ -79,7 +79,7 @@ func Load() Config {
 		HTTPReadHeaderTimeoutSeconds: getEnvInt("HOOKLET_HTTP_READ_HEADER_TIMEOUT", DefaultHTTPReadHeaderTimeoutSeconds),
 		WSWriteTimeoutSeconds:        getEnvInt("HOOKLET_WS_WRITE_TIMEOUT", DefaultWSWriteTimeoutSeconds),
 		WSAuthTimeoutSeconds:         getEnvInt("HOOKLET_WS_AUTH_TIMEOUT", DefaultWSAuthTimeoutSeconds),
-		WSAllowedOrigins:             getEnvCSV("HOOKLET_WS_ORIGINS"),
+		WSAllowedOrigins:             getEnvComma("HOOKLET_WS_ORIGINS"),
 		LogLevel:                     getEnv("HOOKLET_LOG_LEVEL", DefaultLogLevel),
 	}
 
@@ -136,7 +136,7 @@ func getEnvBool(key string, fallback bool) bool {
 	return b
 }
 
-func getEnvCSV(key string) []string {
+func getEnvComma(key string) []string {
 	v := os.Getenv(key)
 	if v == "" {
 		return nil
