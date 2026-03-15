@@ -82,7 +82,11 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read body
-	defer r.Body.Close()
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			log.Debug("Failed to close request body", "error", err)
+		}
+	}()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		var maxErr *http.MaxBytesError

@@ -141,7 +141,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			log.Error("Unix server shutdown error", "error", err)
 			errs = append(errs, err)
 		}
-		os.Remove(s.cfg.SocketPath)
+		if err := os.Remove(s.cfg.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Warn("Failed to remove socket file", "path", s.cfg.SocketPath, "error", err)
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }

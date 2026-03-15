@@ -67,9 +67,15 @@ func extractBearerToken(r *http.Request) string {
 
 // sendAuthFailed writes an auth_failed JSON message to the WebSocket before closing.
 func sendAuthFailed(conn *websocket.Conn, writeTimeout time.Duration, reason string) {
-	msg, _ := json.Marshal(map[string]string{"auth_status": "auth_failed", "reason": reason})
+	msg, err := json.Marshal(map[string]string{"auth_status": "auth_failed", "reason": reason})
+	if err != nil {
+		log.Error("Failed to marshal auth failure message", "reason", reason, "error", err)
+		msg = []byte(`{"auth_status":"auth_failed"}`)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
-	_ = conn.Write(ctx, websocket.MessageText, msg)
+	if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+		log.Debug("Failed to send auth failure message", "reason", reason, "error", err)
+	}
 	cancel()
 }
 
@@ -85,13 +91,21 @@ func (h *WSHandler) registerConn(consumerID int64, conn *websocket.Conn) (contex
 	h.mu.Lock()
 	if old, exists := h.active[consumerID]; exists {
 		// Notify old client before closing (best-effort)
-		kicked, _ := json.Marshal(map[string]string{"type": "kicked", "reason": "replaced_by_new_connection"})
+		kicked, err := json.Marshal(map[string]string{"type": "kicked", "reason": "replaced_by_new_connection"})
+		if err != nil {
+			log.Error("Failed to marshal kicked message", "consumer_id", consumerID, "error", err)
+			kicked = []byte(`{"type":"kicked"}`)
+		}
 		notifyCtx, notifyCancel := context.WithTimeout(context.Background(), writeTimeout)
-		_ = old.conn.Write(notifyCtx, websocket.MessageText, kicked)
+		if err := old.conn.Write(notifyCtx, websocket.MessageText, kicked); err != nil {
+			log.Debug("Failed to notify replaced websocket client", "consumer_id", consumerID, "error", err)
+		}
 		notifyCancel()
 
 		// Close the old WebSocket with a proper close frame
-		old.conn.Close(websocket.StatusNormalClosure, "Replaced by new connection")
+		if err := old.conn.Close(websocket.StatusNormalClosure, "Replaced by new connection"); err != nil {
+			log.Debug("Failed to close replaced websocket client", "consumer_id", consumerID, "error", err)
+		}
 
 		// Cancel the old Subscribe goroutine
 		old.cancel()
@@ -270,7 +284,12 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		"queue_lifetime_ms":    h.cfg.QueueExpiry,
 		"message_retention_ms": h.cfg.MessageTTL,
 	}
-	ackBytes, _ := json.Marshal(ack)
+	ackBytes, err := json.Marshal(ack)
+	if err != nil {
+		log.Error("Failed to marshal auth ack", "consumer", consumer.Name, "error", err)
+		conn.Close(websocket.StatusInternalError, "Internal error")
+		return
+	}
 	ackCtx, ackCancel := context.WithTimeout(context.Background(), writeTimeout)
 	if err := conn.Write(ackCtx, websocket.MessageText, ackBytes); err != nil {
 		ackCancel()
@@ -322,7 +341,9 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		case msg, ok := <-msgs:
 			if !ok {
 				log.Info("Queue channel closed", "consumer", consumer.Name)
-				conn.Close(websocket.StatusNormalClosure, "Queue closed")
+				if err := conn.Close(websocket.StatusNormalClosure, "Queue closed"); err != nil {
+					log.Debug("Failed to close websocket after queue closed", "consumer", consumer.Name, "error", err)
+				}
 				return
 			}
 			writeCtx, writeCancel := context.WithTimeout(connCtx, writeTimeout)

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -219,15 +220,18 @@ func (s *Store) GetOrCreateTopic(name string) (*Topic, error) {
 }
 
 // ListTopics returns all topics.
-func (s *Store) ListTopics() ([]Topic, error) {
+func (s *Store) ListTopics() (topics []Topic, err error) {
 	query := `SELECT id, name, is_pattern, created_at FROM topics ORDER BY name`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list topics: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close topics rows: %w", closeErr))
+		}
+	}()
 
-	var topics []Topic
 	for rows.Next() {
 		var t Topic
 		if err := rows.Scan(&t.ID, &t.Name, &t.IsPattern, &t.CreatedAt); err != nil {
@@ -249,7 +253,10 @@ func (s *Store) DeleteTopic(id int64) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete topic: %w", err)
 	}
-	rows, _ := res.RowsAffected()
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to inspect deleted topic rows: %w", err)
+	}
 	if rows == 0 {
 		return fmt.Errorf("topic not found")
 	}
@@ -336,15 +343,18 @@ func (s *Store) GetWebhookByHash(hash string) (*Webhook, error) {
 }
 
 // ListWebhooks returns all webhooks.
-func (s *Store) ListWebhooks() ([]Webhook, error) {
+func (s *Store) ListWebhooks() (webhooks []Webhook, err error) {
 	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks ORDER BY created_at DESC`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list webhooks: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close webhooks rows: %w", closeErr))
+		}
+	}()
 
-	var webhooks []Webhook
 	for rows.Next() {
 		w, err := scanWebhook(rows)
 		if err != nil {
@@ -377,7 +387,10 @@ func (s *Store) SetWebhookToken(id int64, tokenHash string) error {
 	if err != nil {
 		return fmt.Errorf("failed to set webhook token: %w", err)
 	}
-	rows, _ := res.RowsAffected()
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to inspect updated webhook rows: %w", err)
+	}
 	if rows == 0 {
 		return fmt.Errorf("webhook not found")
 	}
@@ -392,7 +405,10 @@ func (s *Store) ClearWebhookToken(id int64) error {
 	if err != nil {
 		return fmt.Errorf("failed to clear webhook token: %w", err)
 	}
-	rows, _ := res.RowsAffected()
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to inspect cleared webhook rows: %w", err)
+	}
 	if rows == 0 {
 		return fmt.Errorf("webhook not found")
 	}
@@ -473,15 +489,18 @@ func (s *Store) GetConsumerByID(id int64) (*Consumer, error) {
 }
 
 // ListConsumers returns all consumers.
-func (s *Store) ListConsumers() ([]Consumer, error) {
+func (s *Store) ListConsumers() (consumers []Consumer, err error) {
 	query := `SELECT id, name, created_at FROM consumers ORDER BY created_at DESC`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list consumers: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close consumers rows: %w", closeErr))
+		}
+	}()
 
-	var consumers []Consumer
 	for rows.Next() {
 		var c Consumer
 		if err := rows.Scan(&c.ID, &c.Name, &c.CreatedAt); err != nil {
@@ -503,7 +522,10 @@ func (s *Store) DeleteConsumer(id int64) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete consumer: %w", err)
 	}
-	rows, _ := res.RowsAffected()
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to inspect deleted consumer rows: %w", err)
+	}
 	if rows == 0 {
 		return fmt.Errorf("consumer not found")
 	}
@@ -517,7 +539,10 @@ func (s *Store) RegenerateConsumerToken(id int64, newTokenHash string) error {
 	if err != nil {
 		return fmt.Errorf("failed to regenerate token: %w", err)
 	}
-	rows, _ := res.RowsAffected()
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to inspect regenerated consumer rows: %w", err)
+	}
 	if rows == 0 {
 		return fmt.Errorf("consumer not found")
 	}
@@ -572,7 +597,10 @@ func (s *Store) Unsubscribe(consumerID int64, topicName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to unsubscribe: %w", err)
 	}
-	rows, _ := res.RowsAffected()
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to inspect removed subscription rows: %w", err)
+	}
 	if rows == 0 {
 		return fmt.Errorf("subscription not found")
 	}
@@ -580,7 +608,7 @@ func (s *Store) Unsubscribe(consumerID int64, topicName string) error {
 }
 
 // GetConsumerSubscriptions returns all topics a consumer is subscribed to.
-func (s *Store) GetConsumerSubscriptions(consumerID int64) ([]Topic, error) {
+func (s *Store) GetConsumerSubscriptions(consumerID int64) (topics []Topic, err error) {
 	query := `
 		SELECT t.id, t.name, t.is_pattern, t.created_at 
 		FROM topics t
@@ -592,9 +620,12 @@ func (s *Store) GetConsumerSubscriptions(consumerID int64) ([]Topic, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get subscriptions: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close subscriptions rows: %w", closeErr))
+		}
+	}()
 
-	var topics []Topic
 	for rows.Next() {
 		var t Topic
 		if err := rows.Scan(&t.ID, &t.Name, &t.IsPattern, &t.CreatedAt); err != nil {
@@ -610,13 +641,17 @@ func (s *Store) GetConsumerSubscriptions(consumerID int64) ([]Topic, error) {
 
 // SetConsumerSubscriptions replaces all subscriptions for a consumer.
 // topicNames is a comma-separated list of topic names (can include patterns like "orders.*" or "**").
-func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) error {
+func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) (err error) {
 	// Start transaction
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, fmt.Errorf("failed to rollback subscription transaction: %w", rollbackErr))
+		}
+	}()
 
 	getTopic := func(name string) (*Topic, error) {
 		var t Topic
@@ -674,7 +709,10 @@ func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) er
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit subscription transaction: %w", err)
+	}
+	return nil
 }
 
 // Pattern Matching

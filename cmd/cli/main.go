@@ -115,6 +115,27 @@ func (c *Context) adminRequest(method, path string, body any) (*http.Response, e
 	return c.getClient().Do(req)
 }
 
+func closeResponseBody(body io.Closer) {
+	if body == nil {
+		return
+	}
+	if err := body.Close(); err != nil {
+		log.Debug("Failed to close response body", "error", err)
+	}
+}
+
+func responseMessage(resp *http.Response) string {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Sprintf("status %s (failed to read response body: %v)", resp.Status, err)
+	}
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return resp.Status
+	}
+	return string(body)
+}
+
 // Webhook Commands
 type WebhookCmd struct {
 	Create     WebhookCreateCmd     `cmd:"" help:"Create a new webhook"`
@@ -138,11 +159,10 @@ func (c *WebhookCreateCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	// Response may include token if with_token was true
@@ -177,11 +197,10 @@ func (c *WebhookListCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	var webhooks []store.Webhook
@@ -218,11 +237,10 @@ func (c *WebhookDeleteCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	fmt.Printf("Webhook %d deleted\n", c.ID)
@@ -240,11 +258,10 @@ func (c *WebhookSetTokenCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	var result struct {
@@ -274,11 +291,10 @@ func (c *WebhookClearTokenCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	fmt.Printf("Token removed from webhook %d\n", c.ID)
@@ -311,11 +327,10 @@ func (c *ConsumerCreateCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	var res struct {
@@ -339,11 +354,10 @@ func (c *ConsumerListCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	var consumers []store.Consumer
@@ -371,11 +385,10 @@ func (c *ConsumerDeleteCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	fmt.Printf("Consumer %d deleted\n", c.ID)
@@ -395,11 +408,10 @@ func (c *ConsumerSubscribeCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	fmt.Printf("Consumer %d subscribed to: %s\n", c.ID, c.Topic)
@@ -422,11 +434,10 @@ func (c *ConsumerUnsubscribeCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	fmt.Printf("Consumer %d unsubscribed from: %s\n", c.ID, c.Topic)
@@ -446,11 +457,10 @@ func (c *ConsumerSetSubsCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	fmt.Printf("Consumer %d subscriptions set to: %s\n", c.ID, c.Subscriptions)
@@ -471,11 +481,10 @@ func (c *ConsumerRegenTokenCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed: %s", body)
+		return fmt.Errorf("failed: %s", responseMessage(resp))
 	}
 
 	var res struct {
@@ -500,11 +509,10 @@ func (c *StatusCmd) Run(ctx *Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to service: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("service error: %s", body)
+		return fmt.Errorf("service error: %s", responseMessage(resp))
 	}
 
 	var status api.StatusResponse

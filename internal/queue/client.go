@@ -215,10 +215,14 @@ func (c *Client) Close() error {
 	c.reconnectW.Wait()
 
 	if ch != nil {
-		ch.Close()
+		if err := ch.Close(); err != nil {
+			return fmt.Errorf("failed to close channel: %w", err)
+		}
 	}
 	if conn != nil {
-		return conn.Close()
+		if err := conn.Close(); err != nil {
+			return fmt.Errorf("failed to close connection: %w", err)
+		}
 	}
 	return nil
 }
@@ -338,8 +342,12 @@ func (c *Client) Subscribe(ctx context.Context, consumerID string, topics []stri
 			nil,
 		)
 		if err != nil {
-			ch.QueueDelete(queueName, false, false, false)
-			ch.Close()
+			if _, deleteErr := ch.QueueDelete(queueName, false, false, false); deleteErr != nil {
+				log.Warn("Failed to delete queue after bind error", "queue", queueName, "error", deleteErr)
+			}
+			if closeErr := ch.Close(); closeErr != nil {
+				log.Warn("Failed to close channel after bind error", "queue", queueName, "error", closeErr)
+			}
 			return nil, fmt.Errorf("failed to bind topic %s: %w", topic, err)
 		}
 	}
@@ -361,7 +369,11 @@ func (c *Client) Subscribe(ctx context.Context, consumerID string, topics []stri
 
 	out := make(chan amqp.Delivery)
 	go func() {
-		defer ch.Close()
+		defer func() {
+			if err := ch.Close(); err != nil {
+				log.Debug("Failed to close consumer channel", "consumer", consumerID, "error", err)
+			}
+		}()
 		defer close(out)
 		for {
 			select {
