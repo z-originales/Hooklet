@@ -88,13 +88,20 @@ func Load() Config {
 		cfg.Port = DefaultPort
 	}
 	if cfg.MessageTTL < 0 {
-		log.Warn("Invalid HOOKLET_MESSAGE_TTL (must be >= 0), using default", "value", cfg.MessageTTL)
-		cfg.MessageTTL = DefaultMessageTTL
+		log.Fatal("Invalid HOOKLET_MESSAGE_TTL (must be >= 0)", "value", cfg.MessageTTL)
 	}
 	if cfg.QueueExpiry < 0 {
-		log.Warn("Invalid HOOKLET_QUEUE_EXPIRY (must be >= 0), using default", "value", cfg.QueueExpiry)
-		cfg.QueueExpiry = DefaultQueueExpiry
+		log.Fatal("Invalid HOOKLET_QUEUE_EXPIRY (must be >= 0)", "value", cfg.QueueExpiry)
 	}
+
+	if cfg.QueueExpiry > 0 && cfg.MessageTTL > 0 {
+		if cfg.QueueExpiry == cfg.MessageTTL {
+			log.Warn("HOOKLET_QUEUE_EXPIRY equals HOOKLET_MESSAGE_TTL. Queues might expire exactly when messages do, which can lead to unexpected behavior.")
+		} else if cfg.QueueExpiry < cfg.MessageTTL {
+			log.Fatal("Invalid HOOKLET_QUEUE_EXPIRY: must be strictly greater than HOOKLET_MESSAGE_TTL", "queue_expiry", cfg.QueueExpiry, "message_ttl", cfg.MessageTTL)
+		}
+	}
+
 	if cfg.MaxBodyBytes <= 0 {
 		log.Warn("Invalid HOOKLET_MAX_BODY_BYTES (must be > 0), using default", "value", cfg.MaxBodyBytes)
 		cfg.MaxBodyBytes = DefaultMaxBodyBytes

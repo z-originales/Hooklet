@@ -27,13 +27,11 @@ type Client struct {
 	url string
 	cfg Config
 
-	mu       sync.RWMutex
-	conn     *amqp.Connection
-	channel  *amqp.Channel
-	closed   bool
-	returnCh chan amqp.Return
+	mu      sync.RWMutex
+	conn    *amqp.Connection
+	channel *amqp.Channel
+	closed  bool
 
-	pubMu      sync.Mutex
 	closeCh    chan struct{} // signals Close() to reconnect goroutine
 	reconnectW sync.WaitGroup
 }
@@ -98,17 +96,12 @@ func (c *Client) connect() error {
 		return fmt.Errorf("failed to enable publisher confirms: %w", err)
 	}
 
-	// Listen for returned messages (mandatory publishes with no matching queue)
-	returnCh := make(chan amqp.Return, 1)
-	ch.NotifyReturn(returnCh)
-
 	c.mu.Lock()
 	// Close old resources if reconnecting
 	oldCh := c.channel
 	oldConn := c.conn
 	c.conn = conn
 	c.channel = ch
-	c.returnCh = returnCh
 	c.mu.Unlock()
 
 	// Clean up old resources outside the lock
@@ -229,15 +222,9 @@ func (c *Client) Close() error {
 
 // Publish sends a message to the topic exchange.
 // Messages are persistent and will survive RabbitMQ restarts (until TTL expires).
-// Returns ErrNoRoute if no queue is bound for the topic (no active consumer).
 func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
-	// Serialize publishes to correlate confirms with returns
-	c.pubMu.Lock()
-	defer c.pubMu.Unlock()
-
 	c.mu.RLock()
 	ch := c.channel
-	returnCh := c.returnCh
 	c.mu.RUnlock()
 
 	if ch == nil {
@@ -246,17 +233,11 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 
 	routingKey := fmt.Sprintf("webhook.%s", topic)
 
-	// Drain any stale return from a previous publish
-	select {
-	case <-returnCh:
-	default:
-	}
-
 	dc, err := ch.PublishWithDeferredConfirmWithContext(
 		ctx,
 		ExchangeName,
 		routingKey,
-		true,  // mandatory: return message if no queue is bound
+		false, // mandatory: no longer strictly waiting for return to avoid HTTP bottleneck
 		false, // immediate
 		amqp.Publishing{
 			DeliveryMode: amqp.Persistent,
@@ -268,7 +249,7 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 		return fmt.Errorf("failed to publish message: %w", err)
 	}
 
-	// Wait for broker confirmation
+	// Wait for broker confirmation asynchronously from other publishers
 	ok, err := dc.WaitContext(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to confirm message: %w", err)
@@ -277,15 +258,7 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 		return fmt.Errorf("message was nacked by broker")
 	}
 
-	// Check if the message was returned (no bound queue for this routing key).
-	// With mandatory=true, RabbitMQ sends basic.return before basic.ack,
-	// so the return is already in the channel by the time the confirm arrives.
-	select {
-	case <-returnCh:
-		return ErrNoRoute
-	default:
-		return nil
-	}
+	return nil
 }
 
 // Subscribe creates a dedicated queue for the consumer and binds it to the requested topics.

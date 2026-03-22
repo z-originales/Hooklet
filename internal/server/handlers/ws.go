@@ -260,11 +260,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	for _, topic := range topics {
 		allowed := false
 		for _, sub := range subs {
-			if topic == sub.Name {
-				allowed = true
-				break
-			}
-			if !strings.Contains(topic, "*") && store.MatchTopic(sub.Name, topic) {
+			if store.TopicIsAllowed(topic, sub.Name) {
 				allowed = true
 				break
 			}

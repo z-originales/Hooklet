@@ -248,7 +248,7 @@ func (h *AdminHandler) Consumers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		consumer, err := h.db.CreateConsumer(req.Name, token)
+		consumer, err := h.db.CreateConsumerWithSubscriptions(req.Name, token, req.Subscriptions)
 		if err != nil {
 			log.Error("Failed to create consumer", "error", err)
 			if isUniqueConstraintError(err) {
@@ -257,14 +257,6 @@ func (h *AdminHandler) Consumers(w http.ResponseWriter, r *http.Request) {
 			}
 			httpresponse.WriteError(w, "Internal Server Error", http.StatusInternalServerError)
 			return
-		}
-
-		// Set initial subscriptions if provided
-		if req.Subscriptions != "" {
-			if err := h.db.SetConsumerSubscriptions(consumer.ID, req.Subscriptions); err != nil {
-				log.Error("Failed to set subscriptions", "error", err)
-				// Consumer created but subscriptions failed - still return success with warning
-			}
 		}
 
 		// Return the token to the admin only once
