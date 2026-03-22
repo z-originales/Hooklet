@@ -304,7 +304,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodDelete:
 		if err := h.db.DeleteConsumer(id); err != nil {
-			if isNotFoundError(err) {
+			if errors.Is(err, store.ErrConsumerNotFound) || isNotFoundError(err) {
 				httpresponse.WriteError(w, "Consumer not found", http.StatusNotFound)
 				return
 			}
@@ -326,7 +326,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 
 		if req.Subscriptions != nil {
 			if err := h.db.SetConsumerSubscriptions(id, *req.Subscriptions); err != nil {
-				if isNotFoundError(err) {
+				if errors.Is(err, store.ErrConsumerNotFound) || isNotFoundError(err) {
 					httpresponse.WriteError(w, "Consumer not found", http.StatusNotFound)
 					return
 				}
@@ -345,7 +345,7 @@ func (h *AdminHandler) ConsumerByID(w http.ResponseWriter, r *http.Request) {
 			}
 			newHash := store.HashString(newToken)
 			if err := h.db.RegenerateConsumerToken(id, newHash); err != nil {
-				if isNotFoundError(err) {
+				if errors.Is(err, store.ErrConsumerNotFound) || isNotFoundError(err) {
 					httpresponse.WriteError(w, "Consumer not found", http.StatusNotFound)
 					return
 				}
@@ -387,6 +387,10 @@ func (h *AdminHandler) handleConsumerSubscribe(w http.ResponseWriter, r *http.Re
 	}
 
 	if err := h.db.Subscribe(consumerID, req.Topic); err != nil {
+		if errors.Is(err, store.ErrConsumerNotFound) {
+			httpresponse.WriteError(w, "Consumer not found", http.StatusNotFound)
+			return
+		}
 		log.Error("Failed to subscribe", "consumer_id", consumerID, "topic", req.Topic, "error", err)
 		httpresponse.WriteError(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -417,7 +421,7 @@ func (h *AdminHandler) handleConsumerUnsubscribe(w http.ResponseWriter, r *http.
 	}
 
 	if err := h.db.Unsubscribe(consumerID, req.Topic); err != nil {
-		if isNotFoundError(err) {
+		if errors.Is(err, store.ErrConsumerNotFound) || isNotFoundError(err) {
 			httpresponse.WriteError(w, "Subscription not found", http.StatusNotFound)
 			return
 		}

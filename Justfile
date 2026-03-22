@@ -76,13 +76,30 @@ fmt:
 vet:
     go vet ./...
 
+[unix]
 [group("dev")]
-[doc("Run tests")]
+[doc("Run unit tests (excludes e2e — no Docker required)")]
 test:
-    go test ./...  -cover
+    go test -cover $(go list ./... | grep -v 'hooklet/test/e2e')
+
+[windows]
+[group("dev")]
+[doc("Run unit tests (excludes e2e — no Docker required)")]
+test:
+    go test -cover (go list ./... | Where-Object { $_ -notmatch 'hooklet/test/e2e' })
 
 [group("dev")]
-[doc("Run all quality checks")]
+[doc("Run smoke e2e suite (fast, ~seconds, requires Docker)")]
+test-smoke:
+    go test -v -count=1 -timeout 3m ./test/e2e/smoke/...
+
+[group("dev")]
+[doc("Run heavy e2e suite (slow, requires Docker)")]
+test-heavy:
+    go test -v -count=1 -timeout 15m ./test/e2e/heavy/...
+
+[group("dev")]
+[doc("Run all quality checks (unit tests only)")]
 check:
     just fmt
     just vet

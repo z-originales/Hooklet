@@ -66,8 +66,8 @@ func Load() Config {
 		RabbitPort:                   getEnv("RABBITMQ_PORT", DefaultRabbitPort),
 		RabbitUser:                   getEnv("RABBITMQ_USER", DefaultRabbitUser),
 		RabbitPass:                   getEnv("RABBITMQ_PASS", DefaultRabbitPass),
-		MessageTTL:                   getEnvInt("HOOKLET_MESSAGE_TTL", DefaultMessageTTL),   // TODO : Error if lt 0 and disable if eq 0
-		QueueExpiry:                  getEnvInt("HOOKLET_QUEUE_EXPIRY", DefaultQueueExpiry), //TODO : warning if eq MessageTTL and error if lt MessageTTL and disable if eq 0
+		MessageTTL:                   getEnvInt("HOOKLET_MESSAGE_TTL", DefaultMessageTTL),
+		QueueExpiry:                  getEnvInt("HOOKLET_QUEUE_EXPIRY", DefaultQueueExpiry),
 		SocketPath:                   getEnv("HOOKLET_SOCKET", DefaultSocketPath),
 		AdminToken:                   os.Getenv("HOOKLET_ADMIN_TOKEN"),
 		AdminDebug:                   getEnvBool("HOOKLET_ADMIN_DEBUG", false),

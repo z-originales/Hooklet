@@ -12,6 +12,14 @@ import (
 	_ "modernc.org/sqlite" // pure go sqlite driver
 )
 
+// Sentinel errors
+var (
+	ErrConsumerNotFound     = errors.New("consumer not found")
+	ErrWebhookNotFound      = errors.New("webhook not found")
+	ErrSubscriptionNotFound = errors.New("subscription not found")
+	ErrTopicNotFound        = errors.New("topic not found")
+)
+
 // Topic represents a subscription target. Can be an exact topic name or a pattern.
 // Patterns use glob syntax: "*" matches one level, "**" matches all levels.
 type Topic struct {
@@ -101,8 +109,7 @@ func (s *Store) init() error {
 		// Webhooks table: each webhook links to exactly one exact topic
 		`CREATE TABLE IF NOT EXISTS webhooks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			topic_id INTEGER NOT NULL,
+			topic_id INTEGER NOT NULL UNIQUE,
 			topic_hash TEXT NOT NULL,
 			token_hash TEXT DEFAULT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -230,12 +237,6 @@ func (s *Store) CreateWebhookWithToken(name, token string) (*Webhook, error) {
 		return nil, fmt.Errorf("webhook name cannot contain wildcards")
 	}
 
-	// Get or create the exact topic for this webhook
-	topic, err := s.GetOrCreateTopic(name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get/create topic: %w", err)
-	}
-
 	hash := HashString(name)
 	now := time.Now()
 
@@ -245,21 +246,52 @@ func (s *Store) CreateWebhookWithToken(name, token string) (*Webhook, error) {
 		tokenHash = &h
 	}
 
-	query := `INSERT INTO webhooks (name, topic_id, topic_hash, token_hash, created_at) VALUES (?, ?, ?, ?, ?)`
-	res, err := s.db.Exec(query, name, topic.ID, hash, tokenHash, now)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, fmt.Errorf("failed to rollback webhook creation: %w", rollbackErr))
+		}
+	}()
+
+	var topicID int64
+	err = tx.QueryRow(`SELECT id FROM topics WHERE name = ?`, name).Scan(&topicID)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			return nil, fmt.Errorf("failed to check topic: %w", err)
+		}
+		// Topic does not exist, create it
+		res, err := tx.Exec(`INSERT INTO topics (name, created_at) VALUES (?, ?)`, name, now)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create topic: %w", err)
+		}
+		topicID, err = res.LastInsertId()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get topic last insert id: %w", err)
+		}
+	}
+
+	query := `INSERT INTO webhooks (topic_id, topic_hash, token_hash, created_at) VALUES (?, ?, ?, ?)`
+	res, err := tx.Exec(query, topicID, hash, tokenHash, now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create webhook: %w", err)
 	}
 
 	id, err := res.LastInsertId()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get last insert id: %w", err)
+		return nil, fmt.Errorf("failed to get webhook last insert id: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit webhook creation: %w", err)
 	}
 
 	return &Webhook{
 		ID:        id,
 		Name:      name,
-		TopicID:   topic.ID,
+		TopicID:   topicID,
 		TopicHash: hash,
 		TokenHash: tokenHash,
 		HasToken:  tokenHash != nil,
@@ -269,7 +301,11 @@ func (s *Store) CreateWebhookWithToken(name, token string) (*Webhook, error) {
 
 // GetWebhookByHash retrieves a webhook by its topic hash (for ingestion).
 func (s *Store) GetWebhookByHash(hash string) (*Webhook, error) {
-	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks WHERE topic_hash = ?`
+	query := `
+		SELECT w.id, t.name, w.topic_id, w.topic_hash, w.token_hash, w.created_at 
+		FROM webhooks w
+		JOIN topics t ON w.topic_id = t.id
+		WHERE w.topic_hash = ?`
 	w, err := scanWebhook(s.db.QueryRow(query, hash))
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -282,7 +318,11 @@ func (s *Store) GetWebhookByHash(hash string) (*Webhook, error) {
 
 // ListWebhooks returns all webhooks.
 func (s *Store) ListWebhooks() (webhooks []Webhook, err error) {
-	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks ORDER BY created_at DESC`
+	query := `
+		SELECT w.id, t.name, w.topic_id, w.topic_hash, w.token_hash, w.created_at 
+		FROM webhooks w
+		JOIN topics t ON w.topic_id = t.id
+		ORDER BY w.created_at DESC`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list webhooks: %w", err)
@@ -358,7 +398,7 @@ func (s *Store) SetWebhookToken(id int64, tokenHash string) error {
 		return fmt.Errorf("failed to inspect updated webhook rows: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("webhook not found")
+		return ErrWebhookNotFound
 	}
 	return nil
 }
@@ -376,14 +416,18 @@ func (s *Store) ClearWebhookToken(id int64) error {
 		return fmt.Errorf("failed to inspect cleared webhook rows: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("webhook not found")
+		return ErrWebhookNotFound
 	}
 	return nil
 }
 
 // GetWebhookByID retrieves a webhook by its ID.
 func (s *Store) GetWebhookByID(id int64) (*Webhook, error) {
-	query := `SELECT id, name, topic_id, topic_hash, token_hash, created_at FROM webhooks WHERE id = ?`
+	query := `
+		SELECT w.id, t.name, w.topic_id, w.topic_hash, w.token_hash, w.created_at 
+		FROM webhooks w
+		JOIN topics t ON w.topic_id = t.id
+		WHERE w.id = ?`
 	w, err := scanWebhook(s.db.QueryRow(query, id))
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -437,7 +481,7 @@ func (s *Store) CreateConsumerWithSubscriptions(name, token, subscriptions strin
 				}
 
 				if !isPattern(topicName) {
-					return nil, fmt.Errorf("topic %q not found (exact topics must be registered first)", topicName)
+					return nil, ErrTopicNotFound
 				}
 
 				res, err := tx.Exec(`INSERT INTO topics (name, created_at) VALUES (?, ?)`, topicName, now)
@@ -529,7 +573,7 @@ func (s *Store) DeleteConsumer(id int64) error {
 		return fmt.Errorf("failed to inspect deleted consumer rows: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("consumer not found")
+		return ErrConsumerNotFound
 	}
 	return nil
 }
@@ -546,7 +590,7 @@ func (s *Store) RegenerateConsumerToken(id int64, newTokenHash string) error {
 		return fmt.Errorf("failed to inspect regenerated consumer rows: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("consumer not found")
+		return ErrConsumerNotFound
 	}
 	return nil
 }
@@ -558,8 +602,15 @@ func (s *Store) RegenerateConsumerToken(id int64, newTokenHash string) error {
 // - If it's a pattern (e.g. "orders.*"), it will be created implicitly.
 // - If it's an exact topic (e.g. "orders.created"), it MUST exist (created via webhook) or an error is returned.
 func (s *Store) Subscribe(consumerID int64, topicName string) error {
+	var exists bool
+	err := s.db.QueryRow(`SELECT 1 FROM consumers WHERE id = ?`, consumerID).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return ErrConsumerNotFound
+	} else if err != nil {
+		return fmt.Errorf("failed to check consumer: %w", err)
+	}
+
 	var topic *Topic
-	var err error
 
 	if isPattern(topicName) {
 		// Patterns can be created on the fly
@@ -568,7 +619,7 @@ func (s *Store) Subscribe(consumerID int64, topicName string) error {
 		// Exact topics must already exist (registered webhooks)
 		topic, err = s.GetTopicByName(topicName)
 		if err == nil && topic == nil {
-			return fmt.Errorf("topic %q not found (exact topics must be registered first)", topicName)
+			return ErrTopicNotFound
 		}
 	}
 
@@ -586,12 +637,20 @@ func (s *Store) Subscribe(consumerID int64, topicName string) error {
 
 // Unsubscribe removes a subscription for a consumer from a topic.
 func (s *Store) Unsubscribe(consumerID int64, topicName string) error {
+	var exists bool
+	err := s.db.QueryRow(`SELECT 1 FROM consumers WHERE id = ?`, consumerID).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return ErrConsumerNotFound
+	} else if err != nil {
+		return fmt.Errorf("failed to check consumer: %w", err)
+	}
+
 	topic, err := s.GetTopicByName(topicName)
 	if err != nil {
 		return err
 	}
 	if topic == nil {
-		return fmt.Errorf("topic not found")
+		return ErrTopicNotFound
 	}
 
 	query := `DELETE FROM topic_subscriptions WHERE consumer_id = ? AND topic_id = ?`
@@ -604,7 +663,7 @@ func (s *Store) Unsubscribe(consumerID int64, topicName string) error {
 		return fmt.Errorf("failed to inspect removed subscription rows: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("subscription not found")
+		return ErrSubscriptionNotFound
 	}
 	return nil
 }
@@ -644,6 +703,14 @@ func (s *Store) GetConsumerSubscriptions(consumerID int64) (topics []Topic, err 
 // SetConsumerSubscriptions replaces all subscriptions for a consumer.
 // topicNames is a comma-separated list of topic names (can include patterns like "orders.*" or "**").
 func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) (err error) {
+	var exists bool
+	err = s.db.QueryRow(`SELECT 1 FROM consumers WHERE id = ?`, consumerID).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return ErrConsumerNotFound
+	} else if err != nil {
+		return fmt.Errorf("failed to check consumer: %w", err)
+	}
+
 	// Start transaction
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -668,7 +735,7 @@ func (s *Store) SetConsumerSubscriptions(consumerID int64, topicNames string) (e
 
 		// Topic not found
 		if !isPattern(name) {
-			return nil, fmt.Errorf("topic %q not found (exact topics must be registered first)", name)
+			return nil, ErrTopicNotFound
 		}
 
 		// Create pattern topic

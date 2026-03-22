@@ -105,6 +105,11 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 
 	// Publish to queue using the webhook's original name as routing key
 	if err := h.mq.Publish(ctx, wh.Name, body); err != nil {
+		if errors.Is(err, queue.ErrNoRoute) {
+			log.Warn("No consumer bound for webhook", "topic", wh.Name)
+			httpresponse.WriteError(w, "No active consumer", http.StatusServiceUnavailable)
+			return
+		}
 		log.Error("Failed to publish", "topic", wh.Name, "error", err)
 		httpresponse.WriteError(w, "Failed to publish", http.StatusInternalServerError)
 		return

@@ -89,7 +89,11 @@ func (h *WSHandler) registerConn(consumerID int64, conn *websocket.Conn) (contex
 	id := connIDCounter.Add(1)
 
 	h.mu.Lock()
-	if old, exists := h.active[consumerID]; exists {
+	old, exists := h.active[consumerID]
+	h.active[consumerID] = &activeConn{id: id, cancel: cancel, conn: conn}
+	h.mu.Unlock()
+
+	if exists {
 		// Notify old client before closing (best-effort)
 		kicked, err := json.Marshal(map[string]string{"type": "kicked", "reason": "replaced_by_new_connection"})
 		if err != nil {
@@ -112,8 +116,6 @@ func (h *WSHandler) registerConn(consumerID int64, conn *websocket.Conn) (contex
 
 		log.Info("Kicked previous connection", "consumer_id", consumerID)
 	}
-	h.active[consumerID] = &activeConn{id: id, cancel: cancel, conn: conn}
-	h.mu.Unlock()
 
 	return ctx, cancel, id
 }

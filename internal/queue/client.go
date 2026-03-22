@@ -27,13 +27,18 @@ type Client struct {
 	url string
 	cfg Config
 
-	mu      sync.RWMutex
-	conn    *amqp.Connection
-	channel *amqp.Channel
-	closed  bool
+	mu     sync.RWMutex
+	conn   *amqp.Connection
+	chPool chan *pooledChannel
+	closed bool
 
 	closeCh    chan struct{} // signals Close() to reconnect goroutine
 	reconnectW sync.WaitGroup
+}
+
+type pooledChannel struct {
+	ch       *amqp.Channel
+	returnCh chan amqp.Return
 }
 
 const (
@@ -89,24 +94,41 @@ func (c *Client) connect() error {
 		return fmt.Errorf("failed to declare exchange: %w", err)
 	}
 
-	// Enable publisher confirms so we can detect unroutable messages
-	if err := ch.Confirm(false); err != nil {
-		ch.Close()
-		conn.Close()
-		return fmt.Errorf("failed to enable publisher confirms: %w", err)
+	// We don't need this channel anymore since we use a pool
+	ch.Close()
+
+	// Initialize publisher channel pool
+	poolSize := 20
+	newPool := make(chan *pooledChannel, poolSize)
+	for i := 0; i < poolSize; i++ {
+		pch, err := conn.Channel()
+		if err != nil {
+			conn.Close()
+			return fmt.Errorf("failed to open publisher channel: %w", err)
+		}
+		if err := pch.Confirm(false); err != nil {
+			conn.Close()
+			return fmt.Errorf("failed to enable publisher confirms: %w", err)
+		}
+		retCh := make(chan amqp.Return, 1)
+		pch.NotifyReturn(retCh)
+		newPool <- &pooledChannel{ch: pch, returnCh: retCh}
 	}
 
 	c.mu.Lock()
 	// Close old resources if reconnecting
-	oldCh := c.channel
+	oldPool := c.chPool
 	oldConn := c.conn
 	c.conn = conn
-	c.channel = ch
+	c.chPool = newPool
 	c.mu.Unlock()
 
 	// Clean up old resources outside the lock
-	if oldCh != nil {
-		oldCh.Close()
+	if oldPool != nil {
+		close(oldPool)
+		for pc := range oldPool {
+			pc.ch.Close()
+		}
 	}
 	if oldConn != nil && !oldConn.IsClosed() {
 		oldConn.Close()
@@ -132,16 +154,7 @@ func (c *Client) handleReconnect() {
 		connClose := make(chan *amqp.Error, 1)
 		conn.NotifyClose(connClose)
 
-		c.mu.RLock()
-		ch := c.channel
-		c.mu.RUnlock()
-
-		chanClose := make(chan *amqp.Error, 1)
-		if ch != nil {
-			ch.NotifyClose(chanClose)
-		}
-
-		// Wait for connection or channel failure, or explicit close
+		// Wait for connection failure, or explicit close
 		select {
 		case <-c.closeCh:
 			return
@@ -150,11 +163,6 @@ func (c *Client) handleReconnect() {
 				return // graceful close
 			}
 			log.Warn("RabbitMQ connection lost, reconnecting...", "error", err)
-		case err := <-chanClose:
-			if err == nil {
-				return // graceful close
-			}
-			log.Warn("RabbitMQ channel lost, reconnecting...", "error", err)
 		}
 
 		// Exponential backoff reconnection
@@ -200,16 +208,17 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	close(c.closeCh)
-	ch := c.channel
+	pool := c.chPool
 	conn := c.conn
 	c.mu.Unlock()
 
 	// Wait for reconnect goroutine to exit
 	c.reconnectW.Wait()
 
-	if ch != nil {
-		if err := ch.Close(); err != nil {
-			return fmt.Errorf("failed to close channel: %w", err)
+	if pool != nil {
+		close(pool)
+		for pc := range pool {
+			pc.ch.Close()
 		}
 	}
 	if conn != nil {
@@ -224,20 +233,42 @@ func (c *Client) Close() error {
 // Messages are persistent and will survive RabbitMQ restarts (until TTL expires).
 func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 	c.mu.RLock()
-	ch := c.channel
+	pool := c.chPool
 	c.mu.RUnlock()
 
-	if ch == nil {
+	if pool == nil {
 		return fmt.Errorf("not connected to RabbitMQ")
+	}
+
+	var pc *pooledChannel
+	select {
+	case pc = <-pool:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	// Make sure we return the channel to the pool
+	defer func() {
+		select {
+		case pool <- pc:
+		default:
+			pc.ch.Close()
+		}
+	}()
+
+	// Drain any stale returns from previous uses of this channel
+	select {
+	case <-pc.returnCh:
+	default:
 	}
 
 	routingKey := fmt.Sprintf("webhook.%s", topic)
 
-	dc, err := ch.PublishWithDeferredConfirmWithContext(
+	dc, err := pc.ch.PublishWithDeferredConfirmWithContext(
 		ctx,
 		ExchangeName,
 		routingKey,
-		false, // mandatory: no longer strictly waiting for return to avoid HTTP bottleneck
+		true,  // mandatory: wait for return to know if there's no consumer bound
 		false, // immediate
 		amqp.Publishing{
 			DeliveryMode: amqp.Persistent,
@@ -258,7 +289,15 @@ func (c *Client) Publish(ctx context.Context, topic string, body []byte) error {
 		return fmt.Errorf("message was nacked by broker")
 	}
 
-	return nil
+	// Check if the message was returned (no bound queue for this routing key).
+	// With mandatory=true, RabbitMQ sends basic.return before basic.ack,
+	// so the return is already in the channel by the time the confirm arrives.
+	select {
+	case <-pc.returnCh:
+		return ErrNoRoute
+	default:
+		return nil
+	}
 }
 
 // Subscribe creates a dedicated queue for the consumer and binds it to the requested topics.
