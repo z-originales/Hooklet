@@ -52,7 +52,7 @@ jobs:
               - 'go.sum'
 
   docker-dev:
-    if: github.event_name == 'push' && needs.detect-docker-dev-changes.outputs.docker == 'true'
+    if: github.event_name == 'push' && needs.test.result == 'success' && needs.detect-docker-dev-changes.outputs.docker == 'true'
     needs: [test, detect-docker-dev-changes]
     runs-on: ubuntu-latest
     steps:
