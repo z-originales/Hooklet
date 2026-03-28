@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
 
 permissions:
   contents: write
@@ -24,8 +24,20 @@ jobs:
       - name: Run tests
         run: just test-all
 
+  validate-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: extractions/setup-just@v3
+
+      - name: Validate tag format
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          just validate "$TAG"
+
   build:
-    needs: test
+    needs: [test, validate-tag]
     runs-on: ubuntu-latest
 
     steps:
@@ -124,7 +136,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
-    needs: test
+    needs: [test, validate-tag]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
