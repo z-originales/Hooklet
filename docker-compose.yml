@@ -15,5 +15,13 @@ services:
       timeout: 5s
       retries: 5
 
+  hooklet:
+    build: .
+    environment:
+      RABBITMQ_HOST: rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
   rabbitmq_data:
