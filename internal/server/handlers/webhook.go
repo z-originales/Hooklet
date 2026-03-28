@@ -105,7 +105,7 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	// Build envelope with transport metadata
 	receivedAt := time.Now().UTC()
 	env := api.WebhookEvent{
-		Type:       "webhook",
+		Status:     "webhook",
 		ID:         strconv.FormatInt(receivedAt.UnixNano(), 36),
 		Topic:      wh.Name,
 		ReceivedAt: receivedAt,
