@@ -104,3 +104,11 @@ check:
     just fmt
     just vet
     just test
+
+[group("dev")]
+[doc("Perform all the test")]
+test-all:
+    just check
+    just test
+    just test-smoke
+    just test-heavy
