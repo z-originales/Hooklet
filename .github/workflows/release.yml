@@ -3,10 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+'       # Matches v1.2
-      - 'v[0-9]+.[0-9]+-rc[0-9]'   # Matches v1.2-rc1
-      - 'v[0-9]+.[0-9]+.[0-9]+'     # Matches v1.2.3
-      - 'v[0-9]+.[0-9]+.[0-9]+-rc[0-9]' # Matches v1.2.3-rc1
+      - 'v*'
 
 permissions:
   contents: write
@@ -16,24 +13,23 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
 
-      - name: Run tests
-        run: go test ./... -cover
+      - uses: extractions/setup-just@v3
 
-      - name: Run vet
-        run: go vet ./...
+      - name: Run tests
+        run: just test-all
 
   build:
     needs: test
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Extract version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
@@ -131,7 +127,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Extract version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
