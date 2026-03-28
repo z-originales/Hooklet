@@ -28,9 +28,32 @@ jobs:
       - name: Run tests
         run: just test-all
 
-  docker-dev:
+  detect-docker-dev-changes:
     if: github.event_name == 'push'
-    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect Docker-impacting changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            docker:
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'cmd/**'
+              - 'internal/**'
+              - 'go.mod'
+              - 'go.sum'
+
+  docker-dev:
+    if: github.event_name == 'push' && needs.detect-docker-dev-changes.outputs.docker == 'true'
+    needs: [test, detect-docker-dev-changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
