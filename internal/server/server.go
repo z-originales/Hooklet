@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"hooklet/internal/config"
@@ -24,10 +23,6 @@ type Server struct {
 	db        *store.Store
 	startedAt time.Time
 
-	// Track active topics for listing
-	mu     sync.RWMutex
-	topics map[string]struct{}
-
 	tcpServer  *http.Server
 	unixServer *http.Server
 }
@@ -39,7 +34,6 @@ func New(cfg config.Config, db *store.Store, mq *queue.Client) *Server {
 		mq:        mq,
 		db:        db,
 		startedAt: time.Now(),
-		topics:    make(map[string]struct{}),
 	}
 }
 
@@ -147,25 +141,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// trackTopic records active topics for listing.
-func (s *Server) trackTopic(topic string) {
-	s.mu.Lock()
-	s.topics[topic] = struct{}{}
-	s.mu.Unlock()
-}
-
-// listTopics returns a snapshot of active topics.
-func (s *Server) listTopics() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	topics := make([]string, 0, len(s.topics))
-	for t := range s.topics {
-		topics = append(topics, t)
-	}
-	return topics
 }
 
 // rabbitConnected reports MQ connectivity.

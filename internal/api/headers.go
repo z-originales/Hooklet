@@ -1,7 +1,7 @@
 // Package api defines shared headers and query params between service and CLI.
 package api
 
-// HeaderAuthToken is the custom authentication header for webhook ingestion.
+// HeaderAuthToken is the custom authentication header for a webhook producer.
 const HeaderAuthToken = "X-Hooklet-Token"
 
 // HeaderAuthorization is the standard HTTP Authorization header.

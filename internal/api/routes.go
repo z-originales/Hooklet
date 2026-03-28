@@ -6,8 +6,7 @@ const (
 	// Service endpoints
 	RouteStatus    = "/api/status"
 	RoutePublish   = "/webhook/" // + {hash}
-	RouteTopics    = "/api/topics"
-	RouteSubscribe = "/ws/" // + {topic}
+	RouteSubscribe = "/ws/"      // + {topic}
 
 	// Admin endpoints
 	RouteAdminWebhooks  = "/admin/webhooks"
