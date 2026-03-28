@@ -28,7 +28,7 @@ type WebhookSource struct {
 // WebhookEvent is the message format streamed to WebSocket consumers.
 // It wraps the original webhook payload with routing and tracing metadata.
 type WebhookEvent struct {
-	Status        string          `json:"status"`
+	Type          string          `json:"type"`
 	ID            string          `json:"id"`
 	Topic         string          `json:"topic"`
 	ReceivedAt    time.Time       `json:"received_at"`
