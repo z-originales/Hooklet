@@ -1,93 +1,62 @@
 # 🪝 Hooklet
 
-> Lightweight webhook relay — receive webhooks on a VPS, stream them to your apps via WebSocket.
+> Un relais de webhooks léger : recevez des webhooks sur un VPS public et streamez-les vers vos applications internes via WebSocket.
 
+```text
+[Stripe/GitHub] ──POST──▶ [Hooklet VPS] ══WebSocket══▶ [App interne (NAT)]
 ```
-[Stripe/GitHub/etc] ──POST──▶ [Hooklet on VPS] ══WebSocket══▶ [Your App behind NAT]
-```
 
-No inbound ports needed. No ngrok. Just outbound WebSocket connections.
+Pas besoin d'ouvrir de ports entrants sur vos applications ni d'utiliser ngrok.
 
----
-
-## ✨ Features
-
-- **⚡ Real-Time** — Instant delivery via WebSocket
-- **📡 Multi-Topic** — Subscribe to multiple webhooks on one connection  
-- **🔒 Secure by Default** — Token auth, hashed URLs, strict topic registration
-- **🐰 Reliable** — Built on RabbitMQ with message persistence (5 min retention)
-- **🪶 Lightweight** — Single binary, SQLite storage, minimal dependencies
+- **⚡ Temps réel** via WebSocket
+- **📡 Multi-topics** sur une seule connexion (`orders.*`, `**`)
+- **🐰 Fiable** : file d'attente RabbitMQ (rétention des messages en cas de déconnexion)
+- **🔒 Sécurisé** : authentification par token, URLs de webhooks hashées
 
 ---
 
-## Retention
+## 🚀 Démarrage rapide
 
-Queues are created when a WebSocket consumer connects and authenticates. Messages are retained only when a bound queue exists.
-
-- **No active consumer queue**: the webhook returns **503 Service Unavailable**, signaling the provider to retry later.
-- **Consumer connected then disconnected**: messages accumulate in the durable queue up to `HOOKLET_MESSAGE_TTL` (default 5 min) and are delivered on reconnect.
-- **Unused queues** are automatically deleted after `HOOKLET_QUEUE_EXPIRY` (default 1 hour) with no consumers.
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Go 1.24+
-- Docker (for RabbitMQ)
-
-### 1. Start Infrastructure
+### 1. Lancement
 
 ```bash
+# Lancer RabbitMQ
 docker-compose up -d
-```
 
-### 2. Build & Run
-
-```bash
+# Compiler
 go build -o hooklet ./cmd/service
 go build -o hooklet-cli ./cmd/cli
 
+# Démarrer le serveur
 ./hooklet
 ```
 
-### 3. Create a Webhook
+### 2. Créer un Webhook (Producteur)
 
 ```bash
-./hooklet-cli webhook create stripe-payments
+# L'option --with-token sécurise la réception (optionnel)
+./hooklet-cli webhook create stripe-payments --with-token
 ```
-```
-✓ Webhook created: stripe-payments
-  URL: /webhook/a1b2c3d4e5f6...
-```
+L'API retournera une URL hashée (`/webhook/a1b2c3...`) et un token secret.  
+Pour publier un événement, le fournisseur (Stripe, etc.) devra faire un POST sur cette URL (avec le header `X-Hooklet-Token: <token>` si activé).
 
-### 4. Create a Consumer
+### 3. Créer un Consommateur (Client WebSocket)
 
 ```bash
 ./hooklet-cli consumer create my-app --subscriptions=stripe-payments
 ```
-```
-✓ Consumer created: my-app
-  Token: my-app-1737012345678
-  ⚠️  Save this token! It won't be shown again.
-```
+Un token vous sera retourné pour l'authentification WebSocket.
 
-### 5. Connect & Listen
+### 4. Écouter les Webhooks
 
-```
-Connect:  ws://localhost:8080/ws?topics=stripe-payments
-Send:     {"type":"auth","token":"my-app-1737012345678"}
-Receive:  {"type":"auth_ok","consumer":"my-app"}
-Stream:   ... webhooks arrive here ...
-```
+Connectez-vous en WebSocket avec le header `Authorization: Bearer <token>` :
+`wss://localhost:8080/ws?topics=stripe-payments`
 
-WebSocket webhook messages are wrapped in an envelope so consumers can always
-identify the source topic and reception time:
+Les messages reçus auront ce format :
 
 ```json
 {
-  "type": "webhook",
+  "status": "webhook",
   "id": "ddcn20h4aym8",
   "topic": "stripe-payments",
   "received_at": "2026-03-27T15:12:01.123456Z",
@@ -95,55 +64,26 @@ identify the source topic and reception time:
     "webhook_id": 1,
     "webhook_name": "stripe-payments"
   },
-  "data": {
-    "event": "payment.succeeded"
-  }
+  "data": { "event": "payment.succeeded" }
 }
 ```
-
-If the incoming webhook body is not valid JSON, Hooklet sends `data_raw_base64`
-instead of `data`.
+*(Si le body reçu n'est pas du JSON valide, Hooklet enverra `data_raw_base64` au lieu de `data`)*
 
 ---
 
-## 📖 Client Examples
+## 📖 Exemples de Clients WebSocket
 
 <details>
 <summary><b>Go</b></summary>
 
 ```go
-// Recommended: Auth via header
 headers := http.Header{}
 headers.Set("Authorization", "Bearer my-app-xxx")
 
-conn, _, _ := websocket.Dial(ctx, "wss://hooklet.example.com/ws?topics=stripe-payments", &websocket.DialOptions{
+conn, _, _ := websocket.Dial(ctx, "ws://localhost:8080/ws?topics=stripe-payments", &websocket.DialOptions{
     HTTPHeader: headers,
 })
-defer conn.Close(websocket.StatusNormalClosure, "")
-
-for {
-    _, msg, _ := conn.Read(ctx)
-    fmt.Printf("Webhook: %s\n", msg)
-}
-```
-</details>
-
-<details>
-<summary><b>Python</b></summary>
-
-```python
-import websockets
-import asyncio
-
-async def listen():
-    async with websockets.connect(
-        "wss://hooklet.example.com/ws?topics=stripe-payments",
-        extra_headers={"Authorization": "Bearer my-app-xxx"}
-    ) as ws:
-        async for message in ws:
-            print(f"Webhook: {message}")
-
-asyncio.run(listen())
+// ... boucle de lecture conn.Read(ctx)
 ```
 </details>
 
@@ -153,107 +93,80 @@ asyncio.run(listen())
 ```javascript
 const WebSocket = require('ws');
 
-const ws = new WebSocket('wss://hooklet.example.com/ws?topics=stripe-payments', {
+const ws = new WebSocket('ws://localhost:8080/ws?topics=stripe-payments', {
     headers: { 'Authorization': 'Bearer my-app-xxx' }
 });
 
 ws.on('message', (data) => console.log('Webhook:', JSON.parse(data)));
 ```
-
-> Note: Browser WebSocket API doesn't support custom headers. Use message-based auth instead:
-> ```javascript
-> const ws = new WebSocket('wss://hooklet.example.com/ws?topics=stripe-payments');
-> ws.onopen = () => ws.send(JSON.stringify({type: 'auth', token: 'my-app-xxx'}));
-> ```
+> En JS côté navigateur (où les headers custom sont interdits), envoyez l'auth au premier message :
+> `ws.onopen = () => ws.send(JSON.stringify({type: 'auth', token: 'my-app-xxx'}));`
 </details>
 
 <details>
-<summary><b>Rust</b></summary>
+<summary><b>Python</b></summary>
 
-```rust
-use tokio_tungstenite::{connect_async, tungstenite::http::Request};
+```python
+import websockets, asyncio
 
-let request = Request::builder()
-    .uri("wss://hooklet.example.com/ws?topics=stripe-payments")
-    .header("Authorization", "Bearer my-app-xxx")
-    .body(())?;
+async def listen():
+    async with websockets.connect(
+        "ws://localhost:8080/ws?topics=stripe-payments",
+        extra_headers={"Authorization": "Bearer my-app-xxx"}
+    ) as ws:
+        async for message in ws:
+            print(message)
 
-let (mut ws, _) = connect_async(request).await?;
-while let Some(Ok(Message::Text(msg))) = ws.next().await {
-    println!("Webhook: {}", msg);
-}
+asyncio.run(listen())
 ```
 </details>
 
 ---
 
-## 🛠️ CLI Reference
+## 🛠️ Commandes CLI
+
+Le CLI communique avec le service via un socket Unix local.
 
 ```bash
-# Service health
-hooklet-cli status
-
-# Webhooks
-hooklet-cli webhook create <name>
+# Webhooks (Sources)
+hooklet-cli webhook create <name> [--with-token]
 hooklet-cli webhook list
 hooklet-cli webhook delete <id>
+hooklet-cli webhook set-token <id>    # (Re)Génère le token de publication
+hooklet-cli webhook clear-token <id>  # Supprime l'authentification
 
-# Consumers
+# Consommateurs (Clients)
 hooklet-cli consumer create <name> [--subscriptions=topic1,topic2]
 hooklet-cli consumer list
 hooklet-cli consumer delete <id>
+hooklet-cli consumer regen-token <id>
+
+# Abonnements (Patterns acceptés : exact, 'topic.*', '**')
 hooklet-cli consumer subscribe <id> --topic=<pattern>
 hooklet-cli consumer unsubscribe <id> --topic=<pattern>
 hooklet-cli consumer set-subs <id> --subscriptions=<patterns>
-hooklet-cli consumer regen-token <id>
-```
 
-### Subscription Patterns
-
-Consumers can subscribe to topics using glob patterns:
-
-| Pattern | Matches | Example |
-|---------|---------|---------|
-| `orders.created` | Exact topic | `orders.created` only |
-| `orders.*` | Single level | `orders.created`, `orders.updated` |
-| `orders.**` | All levels | `orders.created`, `orders.eu.created` |
-| `**` | Everything | All topics (admin access) |
-
-```bash
-# Subscribe to all order events
-hooklet-cli consumer subscribe 1 --topic="orders.*"
-
-# Subscribe to everything (admin)
-hooklet-cli consumer subscribe 1 --topic="**"
-```
-
-### Remote Administration
-
-```bash
-# On the server
-export HOOKLET_ADMIN_TOKEN=secret123
-
-# From your machine
-hooklet-cli --host=your-server.com --admin-token=secret123 webhook list
+# Supervision
+hooklet-cli status
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8080` | HTTP server port |
-| `RABBITMQ_URL` | *(built from components)* | Full RabbitMQ URL (overrides components) |
-| `RABBITMQ_HOST` | `localhost` | RabbitMQ host |
-| `RABBITMQ_PORT` | `5672` | RabbitMQ port |
-| `RABBITMQ_USER` | `guest` | RabbitMQ username |
-| `RABBITMQ_PASS` | `guest` | RabbitMQ password |
-| `HOOKLET_DB_PATH` | `./hooklet.db` | SQLite database path |
-| `HOOKLET_SOCKET` | `./hooklet.sock` | Unix socket for local CLI |
-| `HOOKLET_ADMIN_TOKEN` | — | Required for remote admin |
-| `HOOKLET_MESSAGE_TTL` | `300000` | Message retention in queue (ms, default 5 min) |
-| `HOOKLET_QUEUE_EXPIRY` | `3600000` | Unused queue lifetime (ms, default 1 hour) |
+| Variable d'environnement | Défaut | Description |
+|-------------------------|---------|-------------|
+| `PORT` | `8080` | Port HTTP |
+| `RABBITMQ_URL` | | URL complète (écrase les variables HOST/PORT/USER/PASS) |
+| `RABBITMQ_HOST` / `PORT` | `localhost` / `5672` | Identifiants RabbitMQ |
+| `RABBITMQ_USER` / `PASS` | `guest` / `guest` | Identifiants RabbitMQ |
+| `HOOKLET_DB_PATH` | `./hooklet.db` | Chemin base SQLite |
+| `HOOKLET_ADMIN_TOKEN` | — | Requis pour l'admin distante |
+| `HOOKLET_MESSAGE_TTL` | `300000` | Rétention des messages en ms (5 min) |
+| `HOOKLET_QUEUE_EXPIRY` | `3600000` | Expiration des files inactives (1h) |
+| `HOOKLET_MAX_BODY_BYTES`| `1048576` | Taille max d'un webhook entrant (1 MB) |
+| `HOOKLET_WS_ORIGINS` | — | Liste d'origines autorisées (CORS) (ex: `https://app.com`) |
+| `HOOKLET_LOG_LEVEL` | `info` | Niveau de log (`debug`, `info`, `warn`, `error`) |
 
 ---
 
@@ -261,148 +174,22 @@ hooklet-cli --host=your-server.com --admin-token=secret123 webhook list
 
 ```mermaid
 flowchart LR
-    subgraph Internet
-        Stripe[Stripe / GitHub / etc.]
-    end
-
-    subgraph VPS["☁️ Public VPS"]
-        Hooklet[Hooklet Service]
-        RabbitMQ[("RabbitMQ<br/>1 queue per consumer")]
-        SQLite[(SQLite)]
-    end
-
-    subgraph Private["🏠 Private Network"]
-        App1[Your App 1]
-        App2[Your App 2]
-    end
-
     Stripe -->|POST /webhook/hash| Hooklet
-    Hooklet -->|publish| RabbitMQ
+    Hooklet -->|publish| RabbitMQ[("RabbitMQ\n1 file / consommateur")]
     RabbitMQ -->|consume| Hooklet
-    Hooklet <--> SQLite
-    Hooklet <-.->|WebSocket| App1
-    Hooklet <-.->|WebSocket| App2
+    Hooklet <--> SQLite[(SQLite)]
+    Hooklet <-.->|WebSocket| App1[App Interne 1]
+    Hooklet <-.->|WebSocket| App2[App Interne 2]
 ```
 
-Each consumer gets a **stable RabbitMQ queue** (named `hooklet-ws-<name>-<id>`) that survives disconnections. Messages accumulate while the consumer is offline (up to 5 min TTL) and are delivered on reconnect. Only one WebSocket connection per consumer is allowed -- reconnecting kicks the previous connection.
+- Chaque consommateur possède **une file RabbitMQ dédiée** (`hooklet-ws-<nom>-<id>`).
+- S'il se déconnecte, les messages s'accumulent (jusqu'à `HOOKLET_MESSAGE_TTL`) et lui sont envoyés à sa reconnexion.
+- Une seule connexion WebSocket active par consommateur est autorisée (la nouvelle remplace l'ancienne).
 
 ---
 
-## 🔒 Security
+## 🔒 Production
 
-- **Hashed webhook URLs** — `/webhook/a1b2c3...` makes topic enumeration more difficult
-- **Token-based auth** — Consumers authenticate via message, not URL (no log leakage)
-- **Stored hashed** — Tokens stored as SHA256, never in plaintext
-- **Strict registration** — Only pre-registered webhooks accept data (404 otherwise)
-- **Unix socket admin** — Local CLI has implicit trust, remote requires token
-
-### WebSocket Authentication
-
-Two methods are supported for WebSocket authentication:
-
-**1. Header-based (recommended for backends)**
-```go
-// Go
-headers := http.Header{}
-headers.Set("Authorization", "Bearer <token>")
-conn, _, _ := websocket.Dial(ctx, "wss://example.com/ws?topics=orders", &websocket.DialOptions{
-    HTTPHeader: headers,
-})
-```
-
-```python
-# Python
-import websockets
-async with websockets.connect(
-    "wss://example.com/ws?topics=orders",
-    extra_headers={"Authorization": "Bearer <token>"}
-) as ws:
-    ...
-```
-
-**2. Message-based (fallback for browsers)**
-```javascript
-const ws = new WebSocket("wss://example.com/ws?topics=orders");
-ws.onopen = () => ws.send(JSON.stringify({type: "auth", token: "<token>"}));
-```
-
-> Header-based auth rejects invalid tokens with HTTP 401 **before** upgrading to WebSocket, saving server resources.
-
----
-
-## Production Checklist
-
-Before deploying Hooklet to production, ensure you follow these security practices:
-
-### Always Use TLS (WSS/HTTPS)
-
-**Never use unencrypted connections in production.**
-
-```
-ws://  -> wss://
-http:// -> https://
-```
-
-With TLS enabled:
-- All headers (including `Authorization`) are encrypted in transit
-- Tokens cannot be intercepted by network observers
-- Use a reverse proxy (Nginx, Traefik, Caddy) for TLS termination
-
-```nginx
-# Nginx example
-server {
-    listen 443 ssl;
-    server_name hooklet.example.com;
-    
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-    
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-    }
-}
-```
-
-### Configure Proxy Logging
-
-**Do not log the `Authorization` header.** Configure your reverse proxy to exclude sensitive headers from access logs:
-
-```nginx
-# Nginx: custom log format WITHOUT Authorization header
-log_format hooklet_safe '$remote_addr - $remote_user [$time_local] '
-                        '"$request" $status $body_bytes_sent '
-                        '"$http_referer" "$http_user_agent"';
-
-access_log /var/log/nginx/hooklet.log hooklet_safe;
-```
-
-```yaml
-# Traefik: redact Authorization header
-accessLog:
-  filePath: "/var/log/traefik/access.log"
-  fields:
-    headers:
-      names:
-        Authorization: redact
-```
-
-### Protect Tokens Client-Side
-
-Tokens are stored in plaintext on the client (this is normal for all token-based auth). Ensure proper handling:
-
-- **Never commit tokens** to version control
-- **Use environment variables** or secret managers (Vault, AWS Secrets Manager)
-- **Restrict file permissions** on config files: `chmod 600 config.yaml`
-- **Rotate tokens** periodically using `hooklet-cli consumer regen-token <id>`
-
-### Set Admin Token
-
-Always set `HOOKLET_ADMIN_TOKEN` in production to protect admin endpoints:
-
-```bash
-export HOOKLET_ADMIN_TOKEN=$(openssl rand -hex 32)
-```
+1. **Proxy Inversé & TLS obligatoire** : Placez Nginx, Traefik ou Caddy devant Hooklet pour chiffrer le trafic en `HTTPS/WSS`.
+2. **Ne logguez pas les tokens** : Configurez votre proxy pour exclure l'entête HTTP `Authorization` de vos logs d'accès.
+3. **Administration à distance** : Protégez vos appels CLI distants avec `export HOOKLET_ADMIN_TOKEN=secret`.
