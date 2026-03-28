@@ -16,7 +16,7 @@ services:
       retries: 5
 
   hooklet:
-    build: .
+    image: ghcr.io/z-originales/hooklet:1
     environment:
       RABBITMQ_HOST: rabbitmq
     depends_on:
