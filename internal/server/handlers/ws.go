@@ -67,10 +67,10 @@ func extractBearerToken(r *http.Request) string {
 
 // sendAuthFailed writes an auth_failed JSON message to the WebSocket before closing.
 func sendAuthFailed(conn *websocket.Conn, writeTimeout time.Duration, reason string) {
-	msg, err := json.Marshal(map[string]string{"auth_status": "auth_failed", "reason": reason})
+	msg, err := json.Marshal(map[string]string{"type": "auth_failed", "auth_status": "auth_failed", "reason": reason})
 	if err != nil {
 		log.Error("Failed to marshal auth failure message", "reason", reason, "error", err)
-		msg = []byte(`{"auth_status":"auth_failed"}`)
+		msg = []byte(`{"type":"auth_failed","auth_status":"auth_failed"}`)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
@@ -277,6 +277,7 @@ func (h *WSHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 
 	// Send auth success acknowledgement
 	ack := map[string]interface{}{
+		"type":                 "auth_ok",
 		"consumer_name":        consumer.Name,
 		"auth_status":          "auth_ok",
 		"queue_lifetime_ms":    h.cfg.QueueExpiry,

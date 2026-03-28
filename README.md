@@ -82,6 +82,28 @@ Receive:  {"type":"auth_ok","consumer":"my-app"}
 Stream:   ... webhooks arrive here ...
 ```
 
+WebSocket webhook messages are wrapped in an envelope so consumers can always
+identify the source topic and reception time:
+
+```json
+{
+  "type": "webhook",
+  "id": "ddcn20h4aym8",
+  "topic": "stripe-payments",
+  "received_at": "2026-03-27T15:12:01.123456Z",
+  "source": {
+    "webhook_id": 1,
+    "webhook_name": "stripe-payments"
+  },
+  "data": {
+    "event": "payment.succeeded"
+  }
+}
+```
+
+If the incoming webhook body is not valid JSON, Hooklet sends `data_raw_base64`
+instead of `data`.
+
 ---
 
 ## 📖 Client Examples

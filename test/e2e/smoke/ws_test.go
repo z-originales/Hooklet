@@ -66,11 +66,28 @@ func TestWebhookDeliveryHappyPath(t *testing.T) {
 
 	// Read from WebSocket and verify the payload matches exactly
 	raw := ws.ReadMessage()
-	var received map[string]string
+	var received struct {
+		Type       string `json:"type"`
+		Topic      string `json:"topic"`
+		ReceivedAt string `json:"received_at"`
+		Data       struct {
+			Event string `json:"event"`
+			ID    string `json:"id"`
+		} `json:"data"`
+	}
 	if err := json.Unmarshal(raw, &received); err != nil {
 		t.Fatalf("unmarshal WS message: %v\nraw: %s", err, raw)
 	}
-	if received["event"] != "order.created" || received["id"] != "42" {
+	if received.Type != "webhook" {
+		t.Fatalf("unexpected message type: %q", received.Type)
+	}
+	if received.Topic != "delivery-hook" {
+		t.Fatalf("unexpected topic: %q", received.Topic)
+	}
+	if received.ReceivedAt == "" {
+		t.Fatal("expected received_at in webhook envelope")
+	}
+	if received.Data.Event != "order.created" || received.Data.ID != "42" {
 		t.Fatalf("payload mismatch: got %v", received)
 	}
 }

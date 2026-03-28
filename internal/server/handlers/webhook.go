@@ -3,9 +3,12 @@ package handlers
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,12 +102,37 @@ func (h *WebhookHandler) Publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build envelope with transport metadata
+	receivedAt := time.Now().UTC()
+	env := api.WebhookEvent{
+		Type:       "webhook",
+		ID:         strconv.FormatInt(receivedAt.UnixNano(), 36),
+		Topic:      wh.Name,
+		ReceivedAt: receivedAt,
+		Source: api.WebhookSource{
+			WebhookID:   wh.ID,
+			WebhookName: wh.Name,
+		},
+	}
+	if json.Valid(body) {
+		env.Data = json.RawMessage(body)
+	} else {
+		env.DataRawBase64 = base64.StdEncoding.EncodeToString(body)
+	}
+
+	envelopedBody, err := json.Marshal(env)
+	if err != nil {
+		log.Error("Failed to build webhook envelope", "topic", wh.Name, "error", err)
+		httpresponse.WriteError(w, "Failed to process payload", http.StatusInternalServerError)
+		return
+	}
+
 	// Publish to queue
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	// Publish to queue using the webhook's original name as routing key
-	if err := h.mq.Publish(ctx, wh.Name, body); err != nil {
+	if err := h.mq.Publish(ctx, wh.Name, envelopedBody); err != nil {
 		if errors.Is(err, queue.ErrNoRoute) {
 			log.Warn("No consumer bound for webhook", "topic", wh.Name)
 			httpresponse.WriteError(w, "No active consumer", http.StatusServiceUnavailable)

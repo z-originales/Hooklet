@@ -9,6 +9,7 @@
 package smoke
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -122,6 +123,18 @@ func TestProtectedWebhookProducerAuth(t *testing.T) {
 
 	// Confirm the message was delivered to the WebSocket consumer
 	msg := ws.ReadMessage()
+	var delivered struct {
+		Type string `json:"type"`
+		Data struct {
+			Event string `json:"event"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(msg, &delivered); err != nil {
+		t.Fatalf("failed to unmarshal delivered webhook: %v\nraw: %s", err, msg)
+	}
+	if delivered.Type != "webhook" || delivered.Data.Event != "secret" {
+		t.Fatalf("unexpected delivered message: %s", msg)
+	}
 	if string(msg) == "" {
 		t.Fatal("expected a message on the WebSocket, got nothing")
 	}

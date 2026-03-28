@@ -73,11 +73,19 @@ func TestOfflineQueueRetention(t *testing.T) {
 	}
 
 	raw := ws2.ReadMessage()
-	var received map[string]string
+	var received struct {
+		Type string `json:"type"`
+		Data struct {
+			Event string `json:"event"`
+		} `json:"data"`
+	}
 	if err := json.Unmarshal(raw, &received); err != nil {
 		t.Fatalf("unmarshal retained message: %v\nraw: %s", err, raw)
 	}
-	if received["event"] != "offline.event" {
+	if received.Type != "webhook" {
+		t.Fatalf("expected webhook envelope, got: %s", raw)
+	}
+	if received.Data.Event != "offline.event" {
 		t.Fatalf("expected retained event, got: %v", received)
 	}
 }
